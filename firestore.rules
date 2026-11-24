@@ -1,0 +1,653 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isValidOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    // --- VALIDATION HELPERS ---
+    function isValidUserProfile(data) {
+      return data.userId is string && isValidId(data.userId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             isValidOptionalString(data, 'email', 120) &&
+             isValidOptionalString(data, 'photoUrl', 500) &&
+             data.bio is string && data.bio.size() <= 280 &&
+             data.xHandle is string && data.xHandle.size() <= 40 &&
+             data.specialties is list && data.specialties.size() <= 8 &&
+             (data.specialties.size() == 0 || data.specialties[0] is string) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBookmark(data, userId, projectId) {
+      return data.userId == userId &&
+             data.projectId == projectId &&
+             data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 100 &&
+             data.projectCategory is string && data.projectCategory.size() >= 1 && data.projectCategory.size() <= 40 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.coverPreset is string && data.coverPreset.size() >= 1 && data.coverPreset.size() <= 30 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidProject(data) {
+      return data.authorId is string && isValidId(data.authorId) &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500 &&
+             data.authorXHandle is string && data.authorXHandle.size() <= 40 &&
+             data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+             data.summary is string && data.summary.size() >= 5 && data.summary.size() <= 1500 &&
+             data.category is string && data.category.size() >= 2 && data.category.size() <= 40 &&
+             data.postType in ['PROJECT', 'TUTORIAL', 'WIP'] &&
+             data.difficulty in ['Beginner', 'Intermediate', 'Advanced'] &&
+             data.estimatedTime is string && data.estimatedTime.size() <= 40 &&
+             data.materials is list && data.materials.size() <= 20 &&
+             (data.materials.size() == 0 || data.materials[0] is string) &&
+             data.steps is list && data.steps.size() <= 15 &&
+             (data.steps.size() == 0 || data.steps[0] is map) &&
+             data.coverPreset in ['woodcraft', 'makertech', 'ceramics', 'studio', 'none'] &&
+             isValidOptionalString(data, 'coverImageData', 160000) &&
+             isValidOptionalString(data, 'xPostUrl', 300) &&
+             isValidOptionalString(data, 'lastCommentId', 128) &&
+             isValidOptionalString(data, 'lastDeletedCommentId', 128) &&
+             data.visibility in ['public', 'private'] &&
+             data.status in ['published', 'draft'] &&
+             data.likesCount is int && data.likesCount >= 0 &&
+             (!('likes' in data) || (data.likes is int && data.likes >= 0)) &&
+             data.commentsCount is int && data.commentsCount >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidLike(data, userId) {
+      return data.userId == userId &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidComment(data, projectId) {
+      return data.projectId == projectId &&
+             data.projectVisibility in ['public', 'private'] &&
+             data.projectAuthorId is string && isValidId(data.projectAuthorId) &&
+             data.authorId is string && isValidId(data.authorId) &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 500 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidCommunityUpdate(data) {
+      return data.authorId is string && isValidId(data.authorId) &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500 &&
+             data.authorXHandle is string && data.authorXHandle.size() <= 40 &&
+             data.category is string && data.category.size() >= 2 && data.category.size() <= 40 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+             data.xIntentShared is bool &&
+             isValidOptionalString(data, 'linkedTweetUrl', 300) &&
+             data.visibility == 'public' &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidMakerEvent(data) {
+      return data.hostId is string && isValidId(data.hostId) &&
+             data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 60 &&
+             data.hostPhotoUrl is string && data.hostPhotoUrl.size() <= 500 &&
+             data.hostXHandle is string && data.hostXHandle.size() <= 40 &&
+             data.title is string && data.title.size() >= 3 && data.title.size() <= 100 &&
+             data.description is string && data.description.size() >= 5 && data.description.size() <= 1000 &&
+             data.category is string && data.category.size() >= 2 && data.category.size() <= 40 &&
+             data.format in ['In-Person', 'Live Stream', 'Hybrid'] &&
+             data.locationOrLink is string && data.locationOrLink.size() >= 2 && data.locationOrLink.size() <= 200 &&
+             data.materialsNeeded is string && data.materialsNeeded.size() <= 300 &&
+             data.startTimeMillis is int && data.startTimeMillis > 0 &&
+             data.durationMinutes is int && data.durationMinutes >= 15 && data.durationMinutes <= 720 &&
+             data.maxAttendees is int && data.maxAttendees >= 1 && data.maxAttendees <= 500 &&
+             data.attendeeCount is int && data.attendeeCount >= 0 && data.attendeeCount <= data.maxAttendees &&
+             data.xHashtag is string && data.xHashtag.size() <= 50 &&
+             data.visibility in ['public', 'private'] &&
+             data.status in ['upcoming', 'completed', 'cancelled'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidRsvp(data, eventId, userId) {
+      return data.eventId == eventId &&
+             data.userId == userId &&
+             data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 60 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidMakerPublicProfile(data, userId) {
+      return data.userId == userId &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             data.photoUrl is string && data.photoUrl.size() <= 500 &&
+             data.bio is string && data.bio.size() <= 280 &&
+             data.specialties is list && data.specialties.size() <= 8 &&
+             (data.specialties.size() == 0 || data.specialties[0] is string) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFollowing(data, userId, targetUserId) {
+      return data.userId == userId &&
+             data.targetUserId == targetUserId &&
+             userId != targetUserId &&
+             data.targetName is string && data.targetName.size() >= 1 && data.targetName.size() <= 60 &&
+             data.targetPhotoUrl is string && data.targetPhotoUrl.size() <= 500 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidFollower(data, targetUserId, followerId) {
+      return data.targetUserId == targetUserId &&
+             data.followerId == followerId &&
+             targetUserId != followerId &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidConversation(data) {
+      return data.participantIds is list &&
+             data.participantIds.size() == 2 &&
+             data.participantIds[0] is string && isValidId(data.participantIds[0]) &&
+             data.participantIds[1] is string && isValidId(data.participantIds[1]) &&
+             data.participantIds[0] != data.participantIds[1] &&
+             data.participantNames is map &&
+             data.participantPhotos is map &&
+             data.lastMessageText is string && data.lastMessageText.size() <= 500 &&
+             data.lastSenderId is string &&
+             isValidTimestamp(data.lastMessageAt) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidDirectMessage(data, conversationId) {
+      return data.conversationId == conversationId &&
+             data.participantIds is list &&
+             data.participantIds.size() == 2 &&
+             request.auth.uid in data.participantIds &&
+             data.senderId == request.auth.uid &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60 &&
+             data.senderPhotoUrl is string && data.senderPhotoUrl.size() <= 500 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 1000 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    // --- 1. USERS & PRIVATE BOOKMARKS ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'bio', 'xHandle',
+                         'specialties', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email', 'photoUrl', 'bio',
+                         'xHandle', 'specialties', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'email', 'photoUrl', 'bio',
+                         'xHandle', 'specialties', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /bookmarks/{projectId} {
+        allow get: if isSignedIn() && isValidId(projectId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(projectId) &&
+                         request.auth.uid == userId &&
+                         incoming().keys().hasAll([
+                           'projectId', 'userId', 'projectTitle',
+                           'projectCategory', 'authorName', 'coverPreset', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'projectId', 'userId', 'projectTitle',
+                           'projectCategory', 'authorName', 'coverPreset', 'createdAt'
+                         ]) &&
+                         isValidBookmark(incoming(), userId, projectId) &&
+                         exists(/databases/$(database)/documents/projects/$(projectId));
+
+        allow delete: if isSignedIn() && isValidId(projectId) && request.auth.uid == userId;
+      }
+
+      match /following/{targetUserId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(targetUserId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(targetUserId) &&
+                         request.auth.uid == userId &&
+                         userId != targetUserId &&
+                         incoming().keys().hasAll([
+                           'userId', 'targetUserId', 'targetName', 'targetPhotoUrl', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'targetUserId', 'targetName', 'targetPhotoUrl', 'createdAt'
+                         ]) &&
+                         isValidFollowing(incoming(), userId, targetUserId) &&
+                         existsAfter(/databases/$(database)/documents/makers/$(targetUserId)/followers/$(userId));
+
+        allow delete: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(targetUserId) &&
+                         request.auth.uid == userId &&
+                         !existsAfter(/databases/$(database)/documents/makers/$(targetUserId)/followers/$(userId));
+      }
+    }
+
+    // --- 1B. PUBLIC NON-PII MAKER DIRECTORY ---
+    match /makers/{userId} {
+      allow get, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'photoUrl', 'bio', 'specialties', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'photoUrl', 'bio', 'specialties', 'updatedAt'
+                       ]) &&
+                       isValidMakerPublicProfile(incoming(), userId);
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == existing().userId &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'photoUrl', 'bio', 'specialties', 'updatedAt'
+                       ]) &&
+                       isValidMakerPublicProfile(incoming(), userId);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /followers/{followerId} {
+        allow get, list: if isSignedIn() && isValidId(userId);
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(followerId) &&
+                         request.auth.uid == followerId &&
+                         userId != followerId &&
+                         incoming().keys().hasAll(['followerId', 'targetUserId', 'createdAt']) &&
+                         incoming().keys().hasOnly(['followerId', 'targetUserId', 'createdAt']) &&
+                         isValidFollower(incoming(), userId, followerId) &&
+                         existsAfter(/databases/$(database)/documents/users/$(followerId)/following/$(userId));
+
+        allow delete: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(followerId) &&
+                         request.auth.uid == followerId &&
+                         !existsAfter(/databases/$(database)/documents/users/$(followerId)/following/$(userId));
+      }
+    }
+
+    // --- 1C. DIRECT MAKER MESSAGING ---
+    match /conversations/{conversationId} {
+      allow get: if isSignedIn() && isValidId(conversationId) &&
+                    request.auth.uid in existing().participantIds;
+      allow list: if isSignedIn() && request.auth.uid in existing().participantIds;
+
+      allow create: if isSignedIn() &&
+                       isValidId(conversationId) &&
+                       request.auth.uid in incoming().participantIds &&
+                       incoming().keys().hasAll([
+                         'participantIds', 'participantNames', 'participantPhotos',
+                         'lastMessageText', 'lastSenderId', 'lastMessageAt', 'createdAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'participantIds', 'participantNames', 'participantPhotos',
+                         'lastMessageText', 'lastSenderId', 'lastMessageAt', 'createdAt'
+                       ]) &&
+                       isValidConversation(incoming()) &&
+                       (incoming().lastSenderId == '' || incoming().lastSenderId == request.auth.uid);
+
+      allow update: if isSignedIn() &&
+                       isValidId(conversationId) &&
+                       request.auth.uid in existing().participantIds &&
+                       incoming().participantIds == existing().participantIds &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().lastSenderId == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'lastMessageText', 'lastSenderId', 'lastMessageAt',
+                         'participantNames', 'participantPhotos'
+                       ]) &&
+                       isValidConversation(incoming());
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) &&
+                      request.auth.uid in existing().participantIds;
+        allow list: if isSignedIn() && request.auth.uid in existing().participantIds;
+
+        allow create: if isSignedIn() &&
+                         isValidId(conversationId) &&
+                         isValidId(messageId) &&
+                         incoming().keys().hasAll([
+                           'conversationId', 'participantIds', 'senderId',
+                           'senderName', 'senderPhotoUrl', 'text', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'conversationId', 'participantIds', 'senderId',
+                           'senderName', 'senderPhotoUrl', 'text', 'createdAt'
+                         ]) &&
+                         isValidDirectMessage(incoming(), conversationId) &&
+                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds == incoming().participantIds;
+
+        allow update, delete: if false;
+      }
+    }
+
+    // --- 2. CREATIVE PROJECTS & DIY TUTORIALS ---
+    match /projects/{projectId} {
+      allow get: if isSignedIn() && isValidId(projectId) &&
+                    (existing().visibility == 'public' || existing().authorId == request.auth.uid);
+      allow list: if isSignedIn() &&
+                     (existing().visibility == 'public' || existing().authorId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(projectId) &&
+                       incoming().authorId == request.auth.uid &&
+                       incoming().likesCount == 0 &&
+                       (!('likes' in incoming()) || incoming().likes == 0) &&
+                       incoming().commentsCount == 0 &&
+                       incoming().keys().hasAll([
+                         'authorId', 'authorName', 'authorPhotoUrl', 'authorXHandle',
+                         'title', 'summary', 'category', 'postType', 'difficulty',
+                         'estimatedTime', 'materials', 'steps', 'coverPreset',
+                         'visibility', 'status', 'likesCount', 'commentsCount',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'authorId', 'authorName', 'authorPhotoUrl', 'authorXHandle',
+                         'title', 'summary', 'category', 'postType', 'difficulty',
+                         'estimatedTime', 'materials', 'steps', 'coverPreset',
+                         'coverImageData', 'xPostUrl', 'lastCommentId',
+                         'visibility', 'status', 'likes', 'likesCount', 'commentsCount',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidProject(incoming());
+
+      allow update: if isSignedIn() && isValidId(projectId) && isValidProject(incoming()) && (
+        // Tier 1: Author edits project details
+        (
+          existing().authorId == request.auth.uid &&
+          incoming().authorId == existing().authorId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().likesCount == existing().likesCount &&
+          (!('likes' in incoming()) || !('likes' in existing()) || incoming().likes == existing().likes) &&
+          incoming().commentsCount == existing().commentsCount &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'summary', 'category', 'postType', 'difficulty',
+            'estimatedTime', 'materials', 'steps', 'coverPreset',
+            'coverImageData', 'xPostUrl', 'visibility', 'status', 'updatedAt'
+          ])
+        ) ||
+        // Tier 2a: Community atomic applause (+1 / -1) synchronized with likes/{uid}
+        (
+          existing().visibility == 'public' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'likes']) &&
+          'likesCount' in incoming().diff(existing()).affectedKeys() &&
+          (
+            (
+              incoming().likesCount == existing().likesCount + 1 &&
+              (!('likes' in incoming()) ||
+                ('likes' in existing() && incoming().likes == existing().likes + 1) ||
+                (!('likes' in existing()) && incoming().likes == existing().likesCount + 1)) &&
+              !exists(/databases/$(database)/documents/projects/$(projectId)/likes/$(request.auth.uid)) &&
+              existsAfter(/databases/$(database)/documents/projects/$(projectId)/likes/$(request.auth.uid))
+            ) ||
+            (
+              incoming().likesCount == existing().likesCount - 1 &&
+              (!('likes' in incoming()) ||
+                ('likes' in existing() && incoming().likes == existing().likes - 1) ||
+                (!('likes' in existing()) && (incoming().likes == 0 || incoming().likes == existing().likesCount - 1))) &&
+              exists(/databases/$(database)/documents/projects/$(projectId)/likes/$(request.auth.uid)) &&
+              !existsAfter(/databases/$(database)/documents/projects/$(projectId)/likes/$(request.auth.uid))
+            )
+          )
+        ) ||
+        // Tier 2b: Community atomic comment counter (+1) synchronized with comments/{lastCommentId}
+        (
+          existing().visibility == 'public' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['commentsCount', 'lastCommentId']) &&
+          isValidId(incoming().lastCommentId) &&
+          incoming().commentsCount == existing().commentsCount + 1 &&
+          !exists(/databases/$(database)/documents/projects/$(projectId)/comments/$(incoming().lastCommentId)) &&
+          existsAfter(/databases/$(database)/documents/projects/$(projectId)/comments/$(incoming().lastCommentId))
+        ) ||
+        // Tier 2c: Community atomic comment deletion (-1) synchronized with comments/{lastDeletedCommentId}
+        (
+          existing().visibility == 'public' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['commentsCount', 'lastDeletedCommentId']) &&
+          isValidId(incoming().lastDeletedCommentId) &&
+          incoming().commentsCount == existing().commentsCount - 1 &&
+          exists(/databases/$(database)/documents/projects/$(projectId)/comments/$(incoming().lastDeletedCommentId)) &&
+          !existsAfter(/databases/$(database)/documents/projects/$(projectId)/comments/$(incoming().lastDeletedCommentId)) &&
+          get(/databases/$(database)/documents/projects/$(projectId)/comments/$(incoming().lastDeletedCommentId)).data.authorId == request.auth.uid
+        )
+      );
+
+      allow delete: if isSignedIn() && isValidId(projectId) && existing().authorId == request.auth.uid;
+
+      // Likes subcollection
+      match /likes/{userId} {
+        allow get: if isSignedIn() && isValidId(projectId) && isValidId(userId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && existing().userId == request.auth.uid;
+
+        allow create: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(userId) &&
+                         request.auth.uid == userId &&
+                         incoming().keys().hasAll(['userId', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'createdAt']) &&
+                         isValidLike(incoming(), userId) &&
+                         exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.likesCount ==
+                           get(/databases/$(database)/documents/projects/$(projectId)).data.likesCount + 1;
+
+        allow delete: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(userId) &&
+                         request.auth.uid == userId &&
+                         exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.likesCount ==
+                           get(/databases/$(database)/documents/projects/$(projectId)).data.likesCount - 1;
+      }
+
+      // Comments subcollection (denormalized projectVisibility & projectAuthorId for zero-get list queries)
+      match /comments/{commentId} {
+        allow get: if isSignedIn() && isValidId(projectId) && isValidId(commentId) &&
+                      (existing().projectVisibility == 'public' || existing().projectAuthorId == request.auth.uid || existing().authorId == request.auth.uid);
+        allow list: if isSignedIn() &&
+                       (existing().projectVisibility == 'public' || existing().projectAuthorId == request.auth.uid || existing().authorId == request.auth.uid);
+
+        allow create: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(commentId) &&
+                         incoming().authorId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'projectId', 'projectVisibility', 'projectAuthorId',
+                           'authorId', 'authorName', 'authorPhotoUrl', 'text', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'projectId', 'projectVisibility', 'projectAuthorId',
+                           'authorId', 'authorName', 'authorPhotoUrl', 'text', 'createdAt'
+                         ]) &&
+                         isValidComment(incoming(), projectId) &&
+                         exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                         get(/databases/$(database)/documents/projects/$(projectId)).data.visibility == incoming().projectVisibility &&
+                         get(/databases/$(database)/documents/projects/$(projectId)).data.authorId == incoming().projectAuthorId &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount ==
+                           get(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount + 1 &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.lastCommentId == commentId;
+
+        allow delete: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(commentId) &&
+                         existing().authorId == request.auth.uid &&
+                         exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount ==
+                           get(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount - 1 &&
+                         getAfter(/databases/$(database)/documents/projects/$(projectId)).data.lastDeletedCommentId == commentId;
+      }
+    }
+
+    // --- 3. COMMUNITY UPDATES / REAL-TIME X DISPATCHES ---
+    match /community_updates/{updateId} {
+      allow get: if isSignedIn() && isValidId(updateId) &&
+                    (existing().visibility == 'public' || existing().authorId == request.auth.uid);
+      allow list: if isSignedIn() &&
+                     (existing().visibility == 'public' || existing().authorId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(updateId) &&
+                       incoming().authorId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'authorId', 'authorName', 'authorPhotoUrl', 'authorXHandle',
+                         'category', 'message', 'xIntentShared', 'visibility', 'createdAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'authorId', 'authorName', 'authorPhotoUrl', 'authorXHandle',
+                         'category', 'message', 'xIntentShared', 'linkedTweetUrl',
+                         'visibility', 'createdAt'
+                       ]) &&
+                       isValidCommunityUpdate(incoming());
+
+      allow delete: if isSignedIn() && isValidId(updateId) && existing().authorId == request.auth.uid;
+    }
+
+    // --- 4. SCHEDULED MAKER EVENTS & RSVPS ---
+    match /events/{eventId} {
+      allow get: if isSignedIn() && isValidId(eventId) &&
+                    (existing().visibility == 'public' || existing().hostId == request.auth.uid);
+      allow list: if isSignedIn() &&
+                     (existing().visibility == 'public' || existing().hostId == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(eventId) &&
+                       incoming().hostId == request.auth.uid &&
+                       incoming().attendeeCount == 0 &&
+                       incoming().status == 'upcoming' &&
+                       incoming().keys().hasAll([
+                         'hostId', 'hostName', 'hostPhotoUrl', 'hostXHandle',
+                         'title', 'description', 'category', 'format', 'locationOrLink',
+                         'materialsNeeded', 'startTimeMillis', 'durationMinutes',
+                         'maxAttendees', 'attendeeCount', 'xHashtag', 'visibility',
+                         'status', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'hostId', 'hostName', 'hostPhotoUrl', 'hostXHandle',
+                         'title', 'description', 'category', 'format', 'locationOrLink',
+                         'materialsNeeded', 'startTimeMillis', 'durationMinutes',
+                         'maxAttendees', 'attendeeCount', 'xHashtag', 'visibility',
+                         'status', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidMakerEvent(incoming());
+
+      allow update: if isSignedIn() && isValidId(eventId) && isValidMakerEvent(incoming()) && (
+        // Tier 1: Host updates upcoming event (terminal locking: completed/cancelled cannot be edited)
+        (
+          existing().hostId == request.auth.uid &&
+          existing().status == 'upcoming' &&
+          incoming().hostId == existing().hostId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().attendeeCount == existing().attendeeCount &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'description', 'category', 'format', 'locationOrLink',
+            'materialsNeeded', 'startTimeMillis', 'durationMinutes',
+            'maxAttendees', 'xHashtag', 'visibility', 'status', 'updatedAt'
+          ])
+        ) ||
+        // Tier 2: Community atomic RSVP (+1 / -1) synchronized with rsvps/{uid}
+        (
+          existing().visibility == 'public' &&
+          existing().status == 'upcoming' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['attendeeCount']) &&
+          (
+            (
+              incoming().attendeeCount == existing().attendeeCount + 1 &&
+              existing().attendeeCount < existing().maxAttendees &&
+              !exists(/databases/$(database)/documents/events/$(eventId)/rsvps/$(request.auth.uid)) &&
+              existsAfter(/databases/$(database)/documents/events/$(eventId)/rsvps/$(request.auth.uid))
+            ) ||
+            (
+              incoming().attendeeCount == existing().attendeeCount - 1 &&
+              exists(/databases/$(database)/documents/events/$(eventId)/rsvps/$(request.auth.uid)) &&
+              !existsAfter(/databases/$(database)/documents/events/$(eventId)/rsvps/$(request.auth.uid))
+            )
+          )
+        )
+      );
+
+      allow delete: if isSignedIn() && isValidId(eventId) && existing().hostId == request.auth.uid;
+
+      match /rsvps/{userId} {
+        allow get: if isSignedIn() && isValidId(eventId) && isValidId(userId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && existing().userId == request.auth.uid;
+
+        allow create: if isSignedIn() &&
+                         isValidId(eventId) &&
+                         isValidId(userId) &&
+                         request.auth.uid == userId &&
+                         incoming().keys().hasAll(['eventId', 'userId', 'userName', 'createdAt']) &&
+                         incoming().keys().hasOnly(['eventId', 'userId', 'userName', 'createdAt']) &&
+                         isValidRsvp(incoming(), eventId, userId) &&
+                         exists(/databases/$(database)/documents/events/$(eventId)) &&
+                         get(/databases/$(database)/documents/events/$(eventId)).data.status == 'upcoming' &&
+                         getAfter(/databases/$(database)/documents/events/$(eventId)).data.attendeeCount ==
+                           get(/databases/$(database)/documents/events/$(eventId)).data.attendeeCount + 1;
+
+        allow delete: if isSignedIn() &&
+                         isValidId(eventId) &&
+                         isValidId(userId) &&
+                         request.auth.uid == userId &&
+                         exists(/databases/$(database)/documents/events/$(eventId)) &&
+                         getAfter(/databases/$(database)/documents/events/$(eventId)).data.attendeeCount ==
+                           get(/databases/$(database)/documents/events/$(eventId)).data.attendeeCount - 1;
+      }
+    }
+  }
+}

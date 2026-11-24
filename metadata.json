@@ -1,0 +1,6 @@
+{
+  "name": "CraftCircle",
+  "description": "A social community for hobbyists to share creative projects, DIY guides, direct maker messages, and workshops.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

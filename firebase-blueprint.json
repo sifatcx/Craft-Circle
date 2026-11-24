@@ -1,0 +1,262 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated hobbyist maker profile with private email isolated to owner.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "Maker display name" },
+        "email": { "type": "string", "description": "Owner email address" },
+        "photoUrl": { "type": "string", "description": "Avatar photo URL" },
+        "bio": { "type": "string", "description": "Maker studio bio" },
+        "xHandle": { "type": "string", "description": "Legacy optional handle" },
+        "specialties": { "type": "array", "description": "List of craft specialties (max 8)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on create" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update" }
+      },
+      "required": ["userId", "displayName", "bio", "xHandle", "specialties", "createdAt", "updatedAt"]
+    },
+    "MakerPublicProfile": {
+      "title": "MakerPublicProfile",
+      "description": "Public non-PII maker card for community discovery and starting direct messages.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "Maker display name" },
+        "photoUrl": { "type": "string", "description": "Avatar photo URL" },
+        "bio": { "type": "string", "description": "Maker studio bio" },
+        "specialties": { "type": "array", "description": "List of craft specialties (max 8)" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["userId", "displayName", "photoUrl", "bio", "specialties", "updatedAt"]
+    },
+    "CraftProject": {
+      "title": "CraftProject",
+      "description": "Creative hobbyist project or step-by-step DIY tutorial post.",
+      "type": "object",
+      "properties": {
+        "authorId": { "type": "string", "description": "Creator Firebase Auth UID" },
+        "authorName": { "type": "string", "description": "Creator display name" },
+        "authorPhotoUrl": { "type": "string", "description": "Creator avatar URL" },
+        "authorXHandle": { "type": "string", "description": "Legacy optional handle" },
+        "title": { "type": "string", "description": "Project or tutorial title" },
+        "summary": { "type": "string", "description": "Project story and overview" },
+        "category": { "type": "string", "description": "Hobby circle category" },
+        "postType": { "type": "string", "enum": ["PROJECT", "TUTORIAL", "WIP"], "description": "Post type" },
+        "difficulty": { "type": "string", "enum": ["Beginner", "Intermediate", "Advanced"], "description": "Skill level" },
+        "estimatedTime": { "type": "string", "description": "Estimated build duration" },
+        "materials": { "type": "array", "description": "List of materials and tools (max 20)" },
+        "steps": { "type": "array", "description": "Step-by-step DIY tutorial steps (max 15)" },
+        "coverPreset": { "type": "string", "enum": ["woodcraft", "makertech", "ceramics", "studio", "none"], "description": "Preset artwork key" },
+        "coverImageData": { "type": "string", "description": "Optional compressed JPEG base64 data URI" },
+        "xPostUrl": { "type": "string", "description": "Optional external link" },
+        "visibility": { "type": "string", "enum": ["public", "private"], "description": "Feed visibility" },
+        "status": { "type": "string", "enum": ["published", "draft"], "description": "Publication status" },
+        "likes": { "type": "integer", "description": "Atomic likes counter" },
+        "likesCount": { "type": "integer", "description": "Atomic applause counter" },
+        "commentsCount": { "type": "integer", "description": "Atomic comment counter" },
+        "lastCommentId": { "type": "string", "description": "Most recent comment ID for atomic batch verification" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server update timestamp" }
+      },
+      "required": [
+        "authorId", "authorName", "authorPhotoUrl", "authorXHandle",
+        "title", "summary", "category", "postType", "difficulty",
+        "estimatedTime", "materials", "steps", "coverPreset",
+        "visibility", "status", "likesCount", "commentsCount",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "ProjectLike": {
+      "title": "ProjectLike",
+      "description": "Atomic per-user applause record on a project.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Liking user UID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["userId", "createdAt"]
+    },
+    "ProjectComment": {
+      "title": "ProjectComment",
+      "description": "Comment or maker note on a creative project.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "description": "Parent project ID" },
+        "projectVisibility": { "type": "string", "enum": ["public", "private"], "description": "Denormalized parent visibility" },
+        "projectAuthorId": { "type": "string", "description": "Denormalized parent author UID" },
+        "authorId": { "type": "string", "description": "Commenter UID" },
+        "authorName": { "type": "string", "description": "Commenter display name" },
+        "authorPhotoUrl": { "type": "string", "description": "Commenter avatar URL" },
+        "text": { "type": "string", "description": "Comment body" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["projectId", "projectVisibility", "projectAuthorId", "authorId", "authorName", "authorPhotoUrl", "text", "createdAt"]
+    },
+    "ProjectBookmark": {
+      "title": "ProjectBookmark",
+      "description": "Saved DIY tutorial or project in user's studio shelf.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "description": "Bookmarked project ID" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "projectTitle": { "type": "string", "description": "Project title snapshot" },
+        "projectCategory": { "type": "string", "description": "Project category snapshot" },
+        "authorName": { "type": "string", "description": "Author name snapshot" },
+        "coverPreset": { "type": "string", "description": "Cover preset key" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["projectId", "userId", "projectTitle", "projectCategory", "authorName", "coverPreset", "createdAt"]
+    },
+    "UserFollowing": {
+      "title": "UserFollowing",
+      "description": "Subscription record stored under the follower's following subcollection.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Follower UID" },
+        "targetUserId": { "type": "string", "description": "Followed creator UID" },
+        "targetName": { "type": "string", "description": "Followed creator display name" },
+        "targetPhotoUrl": { "type": "string", "description": "Followed creator avatar URL" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["userId", "targetUserId", "targetName", "targetPhotoUrl", "createdAt"]
+    },
+    "MakerFollower": {
+      "title": "MakerFollower",
+      "description": "Public follower reference stored under the followed creator's followers subcollection.",
+      "type": "object",
+      "properties": {
+        "followerId": { "type": "string", "description": "Follower UID" },
+        "targetUserId": { "type": "string", "description": "Followed creator UID" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["followerId", "targetUserId", "createdAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Direct 1-on-1 message thread between two CraftCircle makers.",
+      "type": "object",
+      "properties": {
+        "participantIds": { "type": "array", "description": "Sorted pair of participant UIDs" },
+        "participantNames": { "type": "object", "description": "UID to display name map" },
+        "participantPhotos": { "type": "object", "description": "UID to avatar URL map" },
+        "lastMessageText": { "type": "string", "description": "Latest message preview" },
+        "lastSenderId": { "type": "string", "description": "UID of latest message sender" },
+        "lastMessageAt": { "type": "string", "format": "date-time", "description": "Server timestamp of latest message" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp" }
+      },
+      "required": ["participantIds", "participantNames", "participantPhotos", "lastMessageText", "lastSenderId", "lastMessageAt", "createdAt"]
+    },
+    "DirectMessage": {
+      "title": "DirectMessage",
+      "description": "Individual message inside a direct maker conversation.",
+      "type": "object",
+      "properties": {
+        "conversationId": { "type": "string", "description": "Parent conversation ID" },
+        "participantIds": { "type": "array", "description": "Denormalized participant UIDs for scoped queries" },
+        "senderId": { "type": "string", "description": "Sender UID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "senderPhotoUrl": { "type": "string", "description": "Sender avatar URL" },
+        "text": { "type": "string", "description": "Message body" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["conversationId", "participantIds", "senderId", "senderName", "senderPhotoUrl", "text", "createdAt"]
+    },
+    "MakerEvent": {
+      "title": "MakerEvent",
+      "description": "Scheduled DIY workshop, build-along, or community meetup.",
+      "type": "object",
+      "properties": {
+        "hostId": { "type": "string", "description": "Host Firebase Auth UID" },
+        "hostName": { "type": "string", "description": "Host display name" },
+        "hostPhotoUrl": { "type": "string", "description": "Host avatar URL" },
+        "hostXHandle": { "type": "string", "description": "Legacy optional handle" },
+        "title": { "type": "string", "description": "Event title" },
+        "description": { "type": "string", "description": "Workshop details" },
+        "category": { "type": "string", "description": "Hobby category" },
+        "format": { "type": "string", "enum": ["In-Person", "Live Stream", "Hybrid"], "description": "Event format" },
+        "locationOrLink": { "type": "string", "description": "Venue address or live stream URL" },
+        "materialsNeeded": { "type": "string", "description": "Tools/materials attendees should bring" },
+        "startTimeMillis": { "type": "integer", "description": "Scheduled start epoch milliseconds" },
+        "durationMinutes": { "type": "integer", "description": "Duration in minutes" },
+        "maxAttendees": { "type": "integer", "description": "Maximum seats" },
+        "attendeeCount": { "type": "integer", "description": "Atomic RSVP count" },
+        "xHashtag": { "type": "string", "description": "Event tag" },
+        "visibility": { "type": "string", "enum": ["public", "private"], "description": "Event visibility" },
+        "status": { "type": "string", "enum": ["upcoming", "completed", "cancelled"], "description": "Event lifecycle state" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server update timestamp" }
+      },
+      "required": [
+        "hostId", "hostName", "hostPhotoUrl", "hostXHandle",
+        "title", "description", "category", "format", "locationOrLink",
+        "materialsNeeded", "startTimeMillis", "durationMinutes",
+        "maxAttendees", "attendeeCount", "xHashtag", "visibility",
+        "status", "createdAt", "updatedAt"
+      ]
+    },
+    "EventRsvp": {
+      "title": "EventRsvp",
+      "description": "Atomic RSVP ticket for a scheduled maker event.",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string", "description": "Event ID" },
+        "userId": { "type": "string", "description": "Attendee UID" },
+        "userName": { "type": "string", "description": "Attendee display name" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["eventId", "userId", "userName", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-private hobbyist profile documents."
+    },
+    "/users/{userId}/bookmarks/{projectId}": {
+      "schema": { "$ref": "#/entities/ProjectBookmark" },
+      "description": "Saved DIY tutorials and projects per user."
+    },
+    "/users/{userId}/following/{targetUserId}": {
+      "schema": { "$ref": "#/entities/UserFollowing" },
+      "description": "Creators followed by this user for the Following feed."
+    },
+    "/makers/{userId}": {
+      "schema": { "$ref": "#/entities/MakerPublicProfile" },
+      "description": "Public non-PII maker profiles for starting direct chats."
+    },
+    "/makers/{userId}/followers/{followerId}": {
+      "schema": { "$ref": "#/entities/MakerFollower" },
+      "description": "Followers subscribed to this creator."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/CraftProject" },
+      "description": "Creative projects and step-by-step DIY tutorials feed."
+    },
+    "/projects/{projectId}/likes/{userId}": {
+      "schema": { "$ref": "#/entities/ProjectLike" },
+      "description": "Per-user applause reactions synchronized atomically with likesCount."
+    },
+    "/projects/{projectId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/ProjectComment" },
+      "description": "Maker comments and tips on creative projects."
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "Direct 1-on-1 message threads isolated to participants."
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/DirectMessage" },
+      "description": "Direct messages inside a conversation thread."
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/MakerEvent" },
+      "description": "Scheduled creative workshops, meetups, and live build-alongs."
+    },
+    "/events/{eventId}/rsvps/{userId}": {
+      "schema": { "$ref": "#/entities/EventRsvp" },
+      "description": "Per-user event RSVPs synchronized atomically with attendeeCount."
+    }
+  }
+}
