@@ -1,8 +1,6 @@
 package com.example.ui.screens
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -12,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,11 +30,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,11 +56,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,32 +69,50 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.CoverPreset
+import com.example.model.CraftProject
 import com.example.model.DifficultyLevel
 import com.example.model.HobbyCategory
 import com.example.model.PostType
 import com.example.model.TutorialStep
+import com.example.model.UiState
+import com.example.ui.components.EmptyAtelierCard
+import com.example.ui.components.ImageSourcePickerSheet
 import com.example.ui.components.ProjectCoverArt
-import com.example.util.ImageAndFormatUtils
+import com.example.ui.components.rememberMediaPickerController
 import com.example.viewmodel.CraftViewModel
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CreateProjectScreen(
     viewModel: CraftViewModel,
+    editingProjectId: String? = null,
     onNavigateBack: () -> Unit,
     onProjectCreated: (String) -> Unit
 ) {
+    val isEditMode = !editingProjectId.isNullOrBlank()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+
+    val editProjectState by if (isEditMode) {
+        remember(editingProjectId) { viewModel.observeProject(editingProjectId!!) }
+            .collectAsStateWithLifecycle(initialValue = UiState.Loading)
+    } else {
+        remember { mutableStateOf<UiState<CraftProject?>>(UiState.Success(null)) }
+    }
+
+    var hasPopulatedEditFields by remember(editingProjectId) { mutableStateOf(!isEditMode) }
+    var selectedCategory by remember { mutableStateOf("Project") }
+    var initialCoverImageData by remember { mutableStateOf<String?>(null) }
 
     var title by remember { mutableStateOf("") }
     var summary by remember { mutableStateOf("") }
     var selectedCoverPreset by remember { mutableStateOf(CoverPreset.STUDIO) }
-    var coverImageData by remember { mutableStateOf<String?>(null) }
+    var existingCoverImageData by remember { mutableStateOf<String?>(null) }
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var showImageSourceSheet by remember { mutableStateOf(false) }
 
-    // Optional DIY Tutorial details (collapsed by default so uploading a project takes seconds)
+    // Optional DIY Tutorial details
     var showTutorialDetails by remember { mutableStateOf(false) }
     var selectedDifficulty by remember { mutableStateOf(DifficultyLevel.Beginner) }
     var estimatedTime by remember { mutableStateOf("") }
@@ -103,36 +120,58 @@ fun CreateProjectScreen(
     val materials = remember { mutableStateListOf<String>() }
     val steps = remember { mutableStateListOf<TutorialStep>() }
 
-    var isProcessingPhoto by remember { mutableStateOf(false) }
     var isSubmitting by remember { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
     var attemptedSubmit by remember { mutableStateOf(false) }
 
-    val titleTooShort = attemptedSubmit && title.trim().length < 3
-    val summaryTooShort = attemptedSubmit && summary.trim().length < 5
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            isProcessingPhoto = true
-            validationError = null
-            scope.launch {
-                val encoded = ImageAndFormatUtils.encodeUriToCompactBase64(context, uri)
-                isProcessingPhoto = false
-                if (encoded != null) {
-                    coverImageData = encoded
-                } else {
-                    validationError = "Could not process selected photo. Try another image."
+    LaunchedEffect(editProjectState, editingProjectId) {
+        if (isEditMode && !hasPopulatedEditFields) {
+            val loaded = (editProjectState as? UiState.Success<CraftProject?>)?.data
+            if (loaded != null) {
+                title = loaded.title
+                summary = loaded.summary
+                selectedCategory = loaded.category.ifBlank { "Project" }
+                selectedCoverPreset = CoverPreset.fromKey(loaded.coverPreset)
+                existingCoverImageData = loaded.coverImageData
+                initialCoverImageData = loaded.coverImageData
+                selectedDifficulty = DifficultyLevel.fromRaw(loaded.difficulty)
+                estimatedTime = loaded.estimatedTime
+                materials.clear()
+                materials.addAll(loaded.materials)
+                steps.clear()
+                steps.addAll(loaded.steps)
+                if (loaded.materials.isNotEmpty() || loaded.steps.isNotEmpty() || loaded.estimatedTime.isNotBlank()) {
+                    showTutorialDetails = true
                 }
+                hasPopulatedEditFields = true
             }
         }
     }
 
+    val mediaPicker = rememberMediaPickerController(
+        onImagePicked = { uri ->
+            selectedImageUri = uri
+            validationError = null
+        },
+        onPermissionDenied = { msg ->
+            validationError = msg
+        }
+    )
+
+    val previewImageSource = selectedImageUri?.toString() ?: existingCoverImageData
+    val hasCustomPhoto = !previewImageSource.isNullOrBlank()
+    val titleTooShort = attemptedSubmit && title.trim().length < 3
+    val summaryTooShort = attemptedSubmit && summary.trim().length < 5
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Upload Project", style = MaterialTheme.typography.titleLarge) },
+                title = {
+                    Text(
+                        text = if (isEditMode) "Edit Project" else "Upload Project",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                },
                 navigationIcon = {
                     IconButton(
                         onClick = onNavigateBack,
@@ -160,6 +199,28 @@ fun CreateProjectScreen(
                 .imePadding(),
             contentAlignment = Alignment.TopCenter
         ) {
+            if (isEditMode && !hasPopulatedEditFields) {
+                when (val s = editProjectState) {
+                    is UiState.Loading -> {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                    is UiState.Error -> {
+                        EmptyAtelierCard(title = "Unable to open editor", subtitle = s.message)
+                    }
+                    is UiState.Success -> {
+                        if (s.data == null) {
+                            EmptyAtelierCard(
+                                title = "Project not found",
+                                subtitle = "This post may have been removed."
+                            )
+                        }
+                    }
+                }
+                return@Box
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -168,26 +229,45 @@ fun CreateProjectScreen(
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Interactive Project Image Picker & Preview
-                Text("Project Image", style = MaterialTheme.typography.titleSmall)
+                // Interactive Project Image Picker (Camera + Gallery -> Firebase Storage)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Project Image", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = if (selectedImageUri != null) {
+                            "Ready to upload to Cloud Storage"
+                        } else {
+                            "Camera or Gallery"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selectedImageUri != null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(185.dp)
+                        .height(195.dp)
                         .clip(RoundedCornerShape(18.dp))
-                        .clickable(enabled = !isProcessingPhoto) {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
+                        .clickable(enabled = !isSubmitting) {
+                            showImageSourceSheet = true
                         }
                         .testTag("pick_photo_card")
                 ) {
-                    if (!coverImageData.isNullOrBlank() || selectedCoverPreset != CoverPreset.NONE) {
+                    if (hasCustomPhoto || selectedCoverPreset != CoverPreset.NONE) {
                         ProjectCoverArt(
                             coverPreset = selectedCoverPreset.key,
-                            coverImageData = coverImageData,
+                            coverImageData = previewImageSource,
                             title = title.ifBlank { "Project Preview" },
-                            height = 185.dp
+                            height = 195.dp,
+                            allowLocalPreviewUri = selectedImageUri != null
                         )
                     } else {
                         Surface(
@@ -209,7 +289,7 @@ fun CreateProjectScreen(
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    text = "Tap to choose a project photo",
+                                    text = "Tap to capture or choose a photo",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
@@ -224,9 +304,13 @@ fun CreateProjectScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (coverImageData != null) {
+                        if (hasCustomPhoto) {
                             FilledTonalButton(
-                                onClick = { coverImageData = null },
+                                onClick = {
+                                    selectedImageUri = null
+                                    existingCoverImageData = null
+                                },
+                                enabled = !isSubmitting,
                                 modifier = Modifier
                                     .height(40.dp)
                                     .testTag("clear_photo_button")
@@ -241,39 +325,58 @@ fun CreateProjectScreen(
                             }
                         }
                         FilledTonalButton(
-                            onClick = {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            enabled = !isProcessingPhoto,
+                            onClick = { mediaPicker.captureWithCamera() },
+                            enabled = !isSubmitting,
+                            modifier = Modifier
+                                .height(40.dp)
+                                .testTag("camera_photo_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PhotoCamera,
+                                contentDescription = "Take photo with camera",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text("Camera")
+                        }
+                        FilledTonalButton(
+                            onClick = { mediaPicker.pickFromGallery() },
+                            enabled = !isSubmitting,
                             modifier = Modifier
                                 .height(40.dp)
                                 .testTag("pick_photo_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.PhotoLibrary,
-                                contentDescription = null,
+                                contentDescription = "Choose photo from gallery",
                                 modifier = Modifier.size(16.dp)
                             )
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (coverImageData == null) "Choose Photo" else "Change Photo")
+                            Spacer(Modifier.width(5.dp))
+                            Text("Gallery")
                         }
                     }
 
-                    if (isProcessingPhoto) {
+                    if (isSubmitting && selectedImageUri != null) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(Color.Black.copy(alpha = 0.45f)),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator(color = Color.White)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = Color.White)
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "Uploading image...",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White
+                                )
+                            }
                         }
                     }
                 }
 
-                if (coverImageData == null) {
+                if (!hasCustomPhoto) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(CoverPreset.entries, key = { it.key }) { preset ->
                             FilterChip(
@@ -331,6 +434,28 @@ fun CreateProjectScreen(
                         .fillMaxWidth()
                         .testTag("create_summary_input")
                 )
+
+                Text(
+                    text = "Category (optional)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.testTag("create_category_row")
+                ) {
+                    items(HobbyCategory.creatableCategories, key = { it.name }) { hobbyCat ->
+                        val isSelected = selectedCategory.equals(hobbyCat.label, ignoreCase = true)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                selectedCategory = if (isSelected) "Project" else hobbyCat.label
+                            },
+                            label = { Text(hobbyCat.label) },
+                            modifier = Modifier.testTag("create_category_${hobbyCat.name}")
+                        )
+                    }
+                }
 
                 // Optional DIY Steps & Materials Drawer
                 Surface(
@@ -563,27 +688,54 @@ fun CreateProjectScreen(
                             }
                         val derivedPostType = if (validSteps.isNotEmpty()) PostType.TUTORIAL.value else PostType.PROJECT.value
 
-                        viewModel.createProject(
-                            title = cleanTitle,
-                            summary = cleanSummary,
-                            category = "Project",
-                            postType = derivedPostType,
-                            difficulty = selectedDifficulty.label,
-                            estimatedTime = estimatedTime.trim(),
-                            materials = materials.toList(),
-                            steps = validSteps,
-                            coverPreset = selectedCoverPreset.key,
-                            coverImageData = coverImageData
-                        ) { ok, newId, errorMsg ->
-                            isSubmitting = false
-                            if (ok && newId != null) {
-                                onProjectCreated(newId)
-                            } else if (!errorMsg.isNullOrBlank()) {
-                                validationError = errorMsg
+                        if (isEditMode && editingProjectId != null) {
+                            viewModel.updateProject(
+                                context = context,
+                                projectId = editingProjectId,
+                                title = cleanTitle,
+                                summary = cleanSummary,
+                                category = selectedCategory,
+                                postType = derivedPostType,
+                                difficulty = selectedDifficulty.label,
+                                estimatedTime = estimatedTime.trim(),
+                                materials = materials.toList(),
+                                steps = validSteps,
+                                coverPreset = selectedCoverPreset.key,
+                                selectedImageUri = selectedImageUri,
+                                coverImageData = existingCoverImageData,
+                                previousCoverImageData = initialCoverImageData
+                            ) { ok, errorMsg ->
+                                isSubmitting = false
+                                if (ok) {
+                                    onProjectCreated(editingProjectId)
+                                } else if (!errorMsg.isNullOrBlank()) {
+                                    validationError = errorMsg
+                                }
+                            }
+                        } else {
+                            viewModel.createProject(
+                                context = context,
+                                title = cleanTitle,
+                                summary = cleanSummary,
+                                category = selectedCategory,
+                                postType = derivedPostType,
+                                difficulty = selectedDifficulty.label,
+                                estimatedTime = estimatedTime.trim(),
+                                materials = materials.toList(),
+                                steps = validSteps,
+                                coverPreset = selectedCoverPreset.key,
+                                selectedImageUri = selectedImageUri
+                            ) { ok, newId, errorMsg ->
+                                isSubmitting = false
+                                if (ok && newId != null) {
+                                    onProjectCreated(newId)
+                                } else if (!errorMsg.isNullOrBlank()) {
+                                    validationError = errorMsg
+                                }
                             }
                         }
                     },
-                    enabled = !isSubmitting && !isProcessingPhoto,
+                    enabled = !isSubmitting,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
@@ -592,23 +744,45 @@ fun CreateProjectScreen(
                 ) {
                     if (isSubmitting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(20.dp),
                             color = MaterialTheme.colorScheme.onPrimary,
                             strokeWidth = 2.dp
                         )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = if (selectedImageUri != null) "Uploading photo..." else "Saving...",
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     } else {
                         Icon(
-                            imageVector = Icons.Outlined.CloudUpload,
+                            imageVector = if (isEditMode) Icons.Outlined.Check else Icons.Outlined.CloudUpload,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Upload Project", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = if (isEditMode) "Save Changes" else "Upload Project",
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     }
                 }
 
                 Spacer(Modifier.height(20.dp))
             }
         }
+    }
+
+    if (showImageSourceSheet) {
+        ImageSourcePickerSheet(
+            title = if (isEditMode) "Update Project Photo" else "Add Project Photo",
+            hasExistingPhoto = hasCustomPhoto,
+            onDismiss = { showImageSourceSheet = false },
+            onPickCamera = { mediaPicker.captureWithCamera() },
+            onPickGallery = { mediaPicker.pickFromGallery() },
+            onRemovePhoto = {
+                selectedImageUri = null
+                existingCoverImageData = null
+            }
+        )
     }
 }

@@ -551,4 +551,243 @@ test("Creator follow and unfollow enforce atomic batch parity, no self-follow, a
   await assertSucceeds(unfollowBatch.commit());
 });
 
+// --- 9. PROJECT PROGRESS UPDATES TIMELINE ---
+test("Project progress updates allow creator writes, public reads, and deny non-author writes", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+
+  await assertSucceeds(aliceDb.collection("projects").doc("proj_1").set(validProjectPayload(ALICE_UID)));
+
+  // Maker Alice posts a progress update with optional photoData
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_1").collection("updates").doc("upd_1").set({
+      projectId: "proj_1",
+      projectVisibility: "public",
+      projectAuthorId: ALICE_UID,
+      authorId: ALICE_UID,
+      authorName: "Alice Woodworker",
+      authorPhotoUrl: "",
+      statusLabel: "Finishing",
+      message: "Applied the first coat of tung oil and sanded to 320 grit.",
+      photoData: "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+      createdAt: pastDate(1000),
+    })
+  );
+
+  // Maker Alice posts a text-only progress update (photoData omitted cleanly)
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_1").collection("updates").doc("upd_2").set({
+      projectId: "proj_1",
+      projectVisibility: "public",
+      projectAuthorId: ALICE_UID,
+      authorId: ALICE_UID,
+      authorName: "Alice Woodworker",
+      authorPhotoUrl: "",
+      statusLabel: "Completed",
+      message: "Ready for the workbench!",
+      createdAt: pastDate(500),
+    })
+  );
+
+  // Public query succeeds; unfiltered list fails
+  await assertSucceeds(
+    bobDb.collection("projects").doc("proj_1").collection("updates").where("projectVisibility", "==", "public").get()
+  );
+  await assertFails(
+    bobDb.collection("projects").doc("proj_1").collection("updates").get()
+  );
+
+  // Non-author Bob cannot post an update onto Alice's project or delete Alice's update
+  await assertFails(
+    bobDb.collection("projects").doc("proj_1").collection("updates").doc("upd_bad").set({
+      projectId: "proj_1",
+      projectVisibility: "public",
+      projectAuthorId: ALICE_UID,
+      authorId: BOB_UID,
+      authorName: "Bob Potter",
+      authorPhotoUrl: "",
+      statusLabel: "In Progress",
+      message: "Hijacking project log",
+      createdAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    bobDb.collection("projects").doc("proj_1").collection("updates").doc("upd_1").delete()
+  );
+
+  // Author Alice can delete her own update
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_1").collection("updates").doc("upd_1").delete()
+  );
+});
+
+// --- 10. AUTHOR PROJECT EDITS & FIREBASE STORAGE IMAGE URLS ---
+test("Authors can edit project posts and progress updates with Firebase Storage download URLs", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+
+  const coverUrl = "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0589886033.firebasestorage.app/o/project_covers%2Falice%2Fphoto1.jpg?alt=media";
+  const updateUrl = "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0589886033.firebasestorage.app/o/project_updates%2Falice%2Fproj_1%2Fstep2.jpg?alt=media";
+
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_storage").set(
+      validProjectPayload(ALICE_UID, { coverImageData: coverUrl })
+    )
+  );
+
+  // Author Alice updates title, summary, and replaces coverImageData with a new Storage URL
+  const newCoverUrl = "https://firebasestorage.googleapis.com/v0/b/gen-lang-client-0589886033.firebasestorage.app/o/project_covers%2Falice%2Fphoto2.jpg?alt=media";
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_storage").update({
+      title: "Updated Walnut Espresso Tray",
+      summary: "Updated description with fresh workshop photos from Firebase Storage.",
+      category: "Woodworking",
+      postType: "TUTORIAL",
+      difficulty: "Intermediate",
+      estimatedTime: "4 hours",
+      materials: ["Black walnut board", "Chisel", "Tung oil"],
+      steps: [
+        {
+          stepNumber: 1,
+          title: "Mill walnut",
+          instruction: "Plane stock flat to 18mm.",
+          tip: "Check for grain tearout.",
+        },
+      ],
+      coverPreset: "woodcraft",
+      coverImageData: newCoverUrl,
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Non-author Bob cannot update Alice's project coverImageData
+  await assertFails(
+    bobDb.collection("projects").doc("proj_storage").update({
+      coverImageData: newCoverUrl,
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Author Alice posts a progress update referencing a Firebase Storage URL
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_storage").collection("updates").doc("upd_storage").set({
+      projectId: "proj_storage",
+      projectVisibility: "public",
+      projectAuthorId: ALICE_UID,
+      authorId: ALICE_UID,
+      authorName: "Alice Woodworker",
+      authorPhotoUrl: "",
+      statusLabel: "Finishing",
+      message: "Captured progress photo from camera and uploaded to Firebase Storage.",
+      photoData: updateUrl,
+      createdAt: pastDate(500),
+    })
+  );
+});
+
+// --- 11. FIRESTORE SEARCH QUERIES BY CATEGORY, MATERIAL, AND CREATOR ---
+test("Public projects allow Firestore search queries by category, materials, authorName, and searchTokens", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_search_1").set(
+      validProjectPayload(ALICE_UID, {
+        category: "Woodworking",
+        materials: ["Black walnut board", "Chisel"],
+        searchTokens: ["woodworking", "black walnut board", "walnut", "chisel", "alice", "woodworker", "alice woodworker"],
+      })
+    )
+  );
+  await assertSucceeds(
+    aliceDb.collection("projects").doc("proj_search_priv").set(
+      validProjectPayload(ALICE_UID, {
+        visibility: "private",
+        category: "Woodworking",
+        materials: ["Chisel"],
+        searchTokens: ["woodworking", "chisel", "alice"],
+      })
+    )
+  );
+
+  // Category Firestore query (visibility == public + category == Woodworking) returns only public match
+  const catSnap = await assertSucceeds(
+    bobDb.collection("projects")
+      .where("visibility", "==", "public")
+      .where("category", "==", "Woodworking")
+      .get()
+  );
+  if (catSnap.size !== 1) throw new Error(`Expected 1 public category match, got ${catSnap.size}`);
+
+  // Material Firestore query (visibility == public + array-contains Chisel)
+  const matSnap = await assertSucceeds(
+    bobDb.collection("projects")
+      .where("visibility", "==", "public")
+      .where("materials", "array-contains", "Chisel")
+      .get()
+  );
+  if (matSnap.size !== 1) throw new Error(`Expected 1 public material match, got ${matSnap.size}`);
+
+  // Creator Firestore query (visibility == public + authorName == Alice Woodworker)
+  const creatorSnap = await assertSucceeds(
+    bobDb.collection("projects")
+      .where("visibility", "==", "public")
+      .where("authorName", "==", "Alice Woodworker")
+      .get()
+  );
+  if (creatorSnap.size !== 1) throw new Error(`Expected 1 public creator match, got ${creatorSnap.size}`);
+
+  // Normalized searchTokens Firestore query (visibility == public + array-contains walnut)
+  const tokenSnap = await assertSucceeds(
+    bobDb.collection("projects")
+      .where("visibility", "==", "public")
+      .where("searchTokens", "array-contains", "walnut")
+      .get()
+  );
+  if (tokenSnap.size !== 1) throw new Error(`Expected 1 public searchToken match, got ${tokenSnap.size}`);
+
+  // Filtered query without visibility == public MUST fail
+  await assertFails(bobDb.collection("projects").where("category", "==", "Woodworking").get());
+});
+
+// --- 12. IMAGE REFERENCE SCHEME VALIDATION (REJECT FILE/CONTENT/HTTP URIS) ---
+test("Projects and updates reject non-HTTPS and local file/content URI schemes in image fields", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+
+  await assertFails(
+    aliceDb.collection("projects").doc("proj_bad_file").set(
+      validProjectPayload(ALICE_UID, { coverImageData: "file:///data/data/com.example/cache/secret.jpg" })
+    )
+  );
+  await assertFails(
+    aliceDb.collection("projects").doc("proj_bad_content").set(
+      validProjectPayload(ALICE_UID, { coverImageData: "content://com.aistudio.craftcircle.mkrhub.fileprovider/camera_captures/photo.jpg" })
+    )
+  );
+  await assertFails(
+    aliceDb.collection("projects").doc("proj_bad_http").set(
+      validProjectPayload(ALICE_UID, { coverImageData: "http://insecure.example.com/photo.jpg" })
+    )
+  );
+
+  await assertSucceeds(aliceDb.collection("projects").doc("proj_valid_parent").set(validProjectPayload(ALICE_UID)));
+  await assertFails(
+    aliceDb.collection("projects").doc("proj_valid_parent").collection("updates").doc("upd_bad_uri").set({
+      projectId: "proj_valid_parent",
+      projectVisibility: "public",
+      projectAuthorId: ALICE_UID,
+      authorId: ALICE_UID,
+      authorName: "Alice Woodworker",
+      authorPhotoUrl: "",
+      statusLabel: "In Progress",
+      message: "Attempting local URI injection",
+      photoData: "content://media/external/images/media/123",
+      createdAt: pastDate(500),
+    })
+  );
+});
+
+
+
+
 

@@ -3,18 +3,75 @@ package com.example.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import android.util.Base64
+import androidx.core.content.FileProvider
 import com.google.firebase.Timestamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.max
 
 object ImageAndFormatUtils {
+    fun createCameraCaptureUri(context: Context): Uri {
+        val dir = File(context.cacheDir, "camera_photos").apply { mkdirs() }
+        val file = File(dir, "craft_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.jpg")
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
+    suspend fun encodeUriToStorageJpegBytes(context: Context, uri: Uri): ByteArray? = withContext(Dispatchers.IO) {
+        runCatching {
+            val decoded: Bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val source = ImageDecoder.createSource(context.contentResolver, uri)
+                ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    val maxDim = max(info.size.width, info.size.height).coerceAtLeast(1)
+                    if (maxDim > 1440) {
+                        val scale = 1440f / maxDim
+                        decoder.setTargetSize(
+                            (info.size.width * scale).toInt().coerceAtLeast(1),
+                            (info.size.height * scale).toInt().coerceAtLeast(1)
+                        )
+                    }
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
+            } else {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, bounds)
+                }
+                val maxDim = max(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+                val sampleSize = (maxDim / 1440).coerceAtLeast(1)
+                val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                val raw = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, decodeOpts)
+                } ?: return@withContext null
+                val ratio = minOf(1440f / raw.width, 1440f / raw.height, 1f)
+                val targetW = (raw.width * ratio).toInt().coerceAtLeast(1)
+                val targetH = (raw.height * ratio).toInt().coerceAtLeast(1)
+                if (targetW != raw.width || targetH != raw.height) {
+                    Bitmap.createScaledBitmap(raw, targetW, targetH, true)
+                } else raw
+            }
+
+            val out = ByteArrayOutputStream()
+            var quality = 84
+            decoded.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            while (out.size() > 750_000 && quality > 40) {
+                out.reset()
+                quality -= 10
+                decoded.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            }
+            out.toByteArray()
+        }.getOrNull()
+    }
+
     suspend fun encodeUriToCompactBase64(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
         runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

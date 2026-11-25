@@ -65,15 +65,19 @@ fun MakerAvatar(
             .joinToString("") { it.first().uppercaseChar().toString() }
             .ifBlank { "M" }
     }
+    val safePhotoUrl = remember(photoUrl) {
+        val trimmed = photoUrl?.trim().orEmpty()
+        if (trimmed.startsWith("https://", ignoreCase = true)) trimmed else null
+    }
     Surface(
         modifier = modifier.size(size),
         shape = CircleShape,
         color = MaterialTheme.colorScheme.primaryContainer,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        if (!photoUrl.isNullOrBlank()) {
+        if (safePhotoUrl != null) {
             AsyncImage(
-                model = photoUrl,
+                model = safePhotoUrl,
                 contentDescription = "$name avatar",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -99,15 +103,32 @@ fun ProjectCoverArt(
     modifier: Modifier = Modifier,
     height: Dp = 200.dp,
     fallbackCategory: String? = null,
-    alwaysShowFallback: Boolean = false
+    alwaysShowFallback: Boolean = false,
+    allowLocalPreviewUri: Boolean = false
 ) {
-    val isRemoteUrl = remember(coverImageData) {
+    val safeDirectImageUri = remember(coverImageData, allowLocalPreviewUri) {
         val trimmed = coverImageData?.trim().orEmpty()
-        trimmed.startsWith("http://", ignoreCase = true) ||
-            trimmed.startsWith("https://", ignoreCase = true)
+        when {
+            trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+            allowLocalPreviewUri && (
+                trimmed.startsWith("content://", ignoreCase = true) ||
+                    trimmed.startsWith("file://", ignoreCase = true)
+                ) -> trimmed
+            else -> null
+        }
     }
-    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, coverImageData, isRemoteUrl) {
-        value = if (coverImageData.isNullOrBlank() || isRemoteUrl) {
+    val isSafeInlineDataImage = remember(coverImageData) {
+        val trimmed = coverImageData?.trim().orEmpty()
+        trimmed.startsWith("data:image/", ignoreCase = true) ||
+            (!trimmed.contains("://") && !trimmed.contains(":"))
+    }
+    val bitmap by produceState<android.graphics.Bitmap?>(
+        initialValue = null,
+        coverImageData,
+        safeDirectImageUri,
+        isSafeInlineDataImage
+    ) {
+        value = if (coverImageData.isNullOrBlank() || safeDirectImageUri != null || !isSafeInlineDataImage) {
             null
         } else {
             withContext(Dispatchers.Default) {
@@ -135,9 +156,9 @@ fun ProjectCoverArt(
     ) {
         val decoded = bitmap
         when {
-            isRemoteUrl -> {
+            safeDirectImageUri != null -> {
                 AsyncImage(
-                    model = coverImageData,
+                    model = safeDirectImageUri,
                     contentDescription = "$title project photo",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop

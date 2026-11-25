@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.MailOutline
@@ -39,6 +41,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,7 +63,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -70,9 +72,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.CraftProject
 import com.example.model.FeedTab
-import com.example.model.MakerPublicProfile
+import com.example.model.HobbyCategory
 import com.example.model.PostType
 import com.example.model.ProjectBookmark
+import com.example.model.ProjectSearchFilter
 import com.example.model.UiState
 import com.example.model.UserFollowing
 import com.example.model.UserProfile
@@ -93,11 +96,11 @@ fun FeedScreen(
     onOpenAuthor: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val projectsState by viewModel.projectsState.collectAsStateWithLifecycle()
+    val feedProjectsState by viewModel.feedProjectsState.collectAsStateWithLifecycle()
     val bookmarksState by viewModel.bookmarksState.collectAsStateWithLifecycle()
-    val makersState by viewModel.makersState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val selectedSearchFilter by viewModel.selectedSearchFilter.collectAsStateWithLifecycle()
     val selectedFeedTab by viewModel.selectedFeedTab.collectAsStateWithLifecycle()
     val followingState by viewModel.followingState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -108,59 +111,102 @@ fun FeedScreen(
     val followingIds = remember(followingState) {
         (followingState as? UiState.Success<List<UserFollowing>>)?.data?.map { it.targetUserId }?.toSet().orEmpty()
     }
-    val authorTagsByUserId = remember(makersState, userProfile, viewModel.currentUserId) {
-        buildMap<String, List<String>> {
-            (makersState as? UiState.Success<List<MakerPublicProfile>>)?.data?.forEach { maker ->
-                put(maker.userId, maker.specialties)
-            }
-            userProfile?.let { profile ->
-                put(viewModel.currentUserId, profile.specialties)
-            }
-        }
-    }
-    val allPublicProjects = (projectsState as? UiState.Success<List<CraftProject>>)?.data.orEmpty()
-    val tabScopedProjects = remember(allPublicProjects, selectedFeedTab, followingIds) {
+    val queriedProjects = (feedProjectsState as? UiState.Success<List<CraftProject>>)?.data.orEmpty()
+    val tabScopedProjects = remember(queriedProjects, selectedFeedTab, followingIds) {
         when (selectedFeedTab) {
-            FeedTab.FOR_YOU -> allPublicProjects
-            FeedTab.FOLLOWING -> allPublicProjects.filter { it.authorId in followingIds }
+            FeedTab.FOR_YOU -> queriedProjects
+            FeedTab.FOLLOWING -> queriedProjects.filter { it.authorId in followingIds }
         }
     }
-    val filteredProjects = remember(tabScopedProjects, authorTagsByUserId, searchQuery) {
-        filterProjectsByTitleOrUserTags(
-            projects = tabScopedProjects,
-            authorTagsByUserId = authorTagsByUserId,
-            rawQuery = searchQuery
-        )
-    }
+    val hasActiveSearch = searchQuery.trim().isNotEmpty()
     val pullToRefreshState = rememberPullToRefreshState()
 
     Column(modifier = modifier.fillMaxSize()) {
+        // Pinned top search header with Firestore query filter mode chips
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            PrimaryTabRow(
-                selectedTabIndex = selectedFeedTab.ordinal,
-                containerColor = MaterialTheme.colorScheme.background,
-                modifier = Modifier.widthIn(max = 680.dp)
-            ) {
-                Tab(
-                    selected = selectedFeedTab == FeedTab.FOR_YOU,
-                    onClick = { viewModel.selectFeedTab(FeedTab.FOR_YOU) },
-                    text = { Text(FeedTab.FOR_YOU.label) },
-                    modifier = Modifier.testTag("feed_tab_for_you")
+            Column(modifier = Modifier.widthIn(max = 680.dp)) {
+                FeedSearchBar(
+                    query = searchQuery,
+                    filterMode = selectedSearchFilter,
+                    onQueryChange = viewModel::updateSearchQuery
                 )
-                Tab(
-                    selected = selectedFeedTab == FeedTab.FOLLOWING,
-                    onClick = { viewModel.selectFeedTab(FeedTab.FOLLOWING) },
-                    text = {
-                        Text(
-                            if (followingIds.isNotEmpty()) "${FeedTab.FOLLOWING.label} (${followingIds.size})"
-                            else FeedTab.FOLLOWING.label
+
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 2.dp)
+                        .testTag("feed_search_filter_row")
+                ) {
+                    items(ProjectSearchFilter.entries, key = { it.name }) { mode ->
+                        val isSelected = selectedSearchFilter == mode
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { viewModel.selectSearchFilter(mode) },
+                            label = { Text(mode.label) },
+                            leadingIcon = if (isSelected) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            } else null,
+                            modifier = Modifier.testTag("search_filter_${mode.name}")
                         )
-                    },
-                    modifier = Modifier.testTag("feed_tab_following")
-                )
+                    }
+                }
+
+                AnimatedVisibility(visible = selectedSearchFilter == ProjectSearchFilter.CATEGORY) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("feed_category_quick_chips")
+                    ) {
+                        items(HobbyCategory.creatableCategories, key = { it.name }) { category ->
+                            val isCatSelected = searchQuery.trim().equals(category.label, ignoreCase = true)
+                            FilterChip(
+                                selected = isCatSelected,
+                                onClick = {
+                                    viewModel.updateSearchQuery(if (isCatSelected) "" else category.label)
+                                },
+                                label = { Text(category.label) },
+                                modifier = Modifier.testTag("search_category_chip_${category.name}")
+                            )
+                        }
+                    }
+                }
+
+                PrimaryTabRow(
+                    selectedTabIndex = selectedFeedTab.ordinal,
+                    containerColor = MaterialTheme.colorScheme.background,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Tab(
+                        selected = selectedFeedTab == FeedTab.FOR_YOU,
+                        onClick = { viewModel.selectFeedTab(FeedTab.FOR_YOU) },
+                        text = { Text(FeedTab.FOR_YOU.label) },
+                        modifier = Modifier.testTag("feed_tab_for_you")
+                    )
+                    Tab(
+                        selected = selectedFeedTab == FeedTab.FOLLOWING,
+                        onClick = { viewModel.selectFeedTab(FeedTab.FOLLOWING) },
+                        text = {
+                            Text(
+                                if (followingIds.isNotEmpty()) "${FeedTab.FOLLOWING.label} (${followingIds.size})"
+                                else FeedTab.FOLLOWING.label
+                            )
+                        },
+                        modifier = Modifier.testTag("feed_tab_following")
+                    )
+                }
             }
         }
 
@@ -193,13 +239,6 @@ fun FeedScreen(
                         .testTag("feed_project_list"),
                     contentPadding = PaddingValues(bottom = 96.dp)
                 ) {
-                    item(key = "feed_search_bar") {
-                        FeedSearchBar(
-                            query = searchQuery,
-                            onQueryChange = viewModel::updateSearchQuery
-                        )
-                    }
-
                     item(key = "composer_prompt") {
                         QuickPostPromptBar(
                             userProfile = userProfile,
@@ -207,7 +246,7 @@ fun FeedScreen(
                         )
                     }
 
-                    when (val state = projectsState) {
+                    when (val state = feedProjectsState) {
                         is UiState.Loading -> {
                             item(key = "loading") {
                                 Box(
@@ -232,7 +271,22 @@ fun FeedScreen(
                             }
                         }
                         is UiState.Success -> {
-                            if (state.data.isEmpty()) {
+                            if (hasActiveSearch && tabScopedProjects.isEmpty()) {
+                                item(key = "search_empty") {
+                                    val filterHint = when (selectedSearchFilter) {
+                                        ProjectSearchFilter.ALL -> "by category, material, or creator name"
+                                        ProjectSearchFilter.CATEGORY -> "in category \"${searchQuery.trim()}\""
+                                        ProjectSearchFilter.MATERIAL -> "with material \"${searchQuery.trim()}\""
+                                        ProjectSearchFilter.CREATOR -> "by creator \"${searchQuery.trim()}\""
+                                    }
+                                    EmptyAtelierCard(
+                                        title = "No matching projects",
+                                        subtitle = "No projects found $filterHint.",
+                                        actionLabel = "Clear Search",
+                                        onAction = { viewModel.updateSearchQuery("") }
+                                    )
+                                }
+                            } else if (state.data.isEmpty()) {
                                 item(key = "empty") {
                                     EmptyAtelierCard(
                                         title = "No projects yet",
@@ -259,41 +313,33 @@ fun FeedScreen(
                                         onAction = { viewModel.selectFeedTab(FeedTab.FOR_YOU) }
                                     )
                                 }
-                            } else if (filteredProjects.isEmpty()) {
-                                item(key = "search_empty") {
-                                    EmptyAtelierCard(
-                                        title = "No matching projects",
-                                        subtitle = "No projects match \"${searchQuery.trim()}\" by title or user tags.",
-                                        actionLabel = "Clear Search",
-                                        onAction = { viewModel.updateSearchQuery("") }
+                            } else {
+                                items(tabScopedProjects, key = { it.id }) { project ->
+                                    val isLiked by viewModel.observeIsProjectLiked(project.id)
+                                        .collectAsStateWithLifecycle(initialValue = false)
+                                    val isBookmarked = project.id in bookmarkedIds
+
+                                    ProjectFeedCard(
+                                        project = project,
+                                        currentUserId = viewModel.currentUserId,
+                                        isLiked = isLiked,
+                                        isBookmarked = isBookmarked,
+                                        onOpenDetail = { onOpenProject(project.id) },
+                                        onToggleLike = { viewModel.toggleLike(project, isLiked) },
+                                        onToggleBookmark = { viewModel.toggleBookmark(project, isBookmarked) },
+                                        onMessageAuthor = {
+                                            viewModel.openDirectChat(
+                                                otherUserId = project.authorId,
+                                                otherName = project.authorName,
+                                                otherPhotoUrl = project.authorPhotoUrl,
+                                                onReady = onOpenConversation
+                                            )
+                                        },
+                                        onOpenAuthor = if (project.authorId.isNotBlank()) {
+                                            { onOpenAuthor(project.authorId) }
+                                        } else null
                                     )
                                 }
-                            } else {
-                            items(filteredProjects, key = { it.id }) { project ->
-                                val isLiked by viewModel.observeIsProjectLiked(project.id)
-                                    .collectAsStateWithLifecycle(initialValue = false)
-                                val isBookmarked = project.id in bookmarkedIds
-
-                                ProjectFeedCard(
-                                    project = project,
-                                    currentUserId = viewModel.currentUserId,
-                                    isLiked = isLiked,
-                                    isBookmarked = isBookmarked,
-                                    onOpenDetail = { onOpenProject(project.id) },
-                                    onToggleLike = { viewModel.toggleLike(project, isLiked) },
-                                    onToggleBookmark = { viewModel.toggleBookmark(project, isBookmarked) },
-                                    onMessageAuthor = {
-                                        viewModel.openDirectChat(
-                                            otherUserId = project.authorId,
-                                            otherName = project.authorName,
-                                            otherPhotoUrl = project.authorPhotoUrl,
-                                            onReady = onOpenConversation
-                                        )
-                                    },
-                                    onOpenAuthor = if (project.authorId.isNotBlank()) {
-                                        { onOpenAuthor(project.authorId) }
-                                    } else null
-                                )
                             }
                         }
                     }
@@ -301,54 +347,27 @@ fun FeedScreen(
             }
         }
     }
-    }
-}
-
-private fun filterProjectsByTitleOrUserTags(
-    projects: List<CraftProject>,
-    authorTagsByUserId: Map<String, List<String>>,
-    rawQuery: String
-): List<CraftProject> {
-    val trimmed = rawQuery.trim()
-    if (trimmed.isEmpty()) return projects
-
-    val tokens = trimmed
-        .split(Regex("\\s+"))
-        .map { it.trim().trimStart('#', '@').lowercase() }
-        .filter { it.isNotEmpty() }
-    if (tokens.isEmpty()) return projects
-
-    return projects.filter { project ->
-        val titleLower = project.title.lowercase()
-        val authorNameLower = project.authorName.lowercase()
-        val usernameLower = ImageAndFormatUtils.formatMakerUsername(project.authorName)
-            .removePrefix("@")
-            .lowercase()
-        val profileTags = authorTagsByUserId[project.authorId].orEmpty()
-        val combinedTags = (profileTags + project.tags + project.materials)
-            .map { it.trim().trimStart('#').lowercase() }
-
-        tokens.all { token ->
-            titleLower.contains(token) ||
-                authorNameLower.contains(token) ||
-                usernameLower.contains(token) ||
-                combinedTags.any { tag -> tag.contains(token) }
-        }
-    }
 }
 
 @Composable
 private fun FeedSearchBar(
     query: String,
+    filterMode: ProjectSearchFilter,
     onQueryChange: (String) -> Unit
 ) {
     val focusManager = LocalFocusManager.current
+    val placeholderText = when (filterMode) {
+        ProjectSearchFilter.ALL -> "Search by category, material, or creator..."
+        ProjectSearchFilter.CATEGORY -> "Search by category (e.g., Woodworking)..."
+        ProjectSearchFilter.MATERIAL -> "Search by material (e.g., Walnut)..."
+        ProjectSearchFilter.CREATOR -> "Search by creator name..."
+    }
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
         placeholder = {
             Text(
-                text = "Search by title or user tags...",
+                text = placeholderText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -589,12 +608,19 @@ fun ProjectFeedCard(
                 )
             }
 
-            if (project.estimatedTime.isNotBlank() || project.steps.isNotEmpty()) {
+            if (project.category.isNotBlank() || project.materials.isNotEmpty() || project.estimatedTime.isNotBlank() || project.steps.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (project.category.isNotBlank() && project.category != "Project") {
+                        CraftBadge(
+                            text = project.category,
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                     if (project.steps.isNotEmpty()) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.MenuBook,
@@ -609,6 +635,9 @@ fun ProjectFeedCard(
                             if (project.estimatedTime.isNotBlank()) {
                                 append(" · ${project.estimatedTime}")
                             }
+                            if (project.materials.isNotEmpty()) {
+                                append(" · ${project.materials.take(2).joinToString(", ")}")
+                            }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = if (project.steps.isNotEmpty()) {
@@ -616,7 +645,9 @@ fun ProjectFeedCard(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -684,13 +715,13 @@ fun ProjectFeedCard(
                 ) {
                     Icon(
                         imageVector = if (isBookmarked) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder,
-                        contentDescription = "Save post",
+                        contentDescription = if (isBookmarked) "Remove bookmark" else "Bookmark project",
                         tint = if (isBookmarked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (isBookmarked) "Saved" else "Save",
+                        text = if (isBookmarked) "Bookmarked" else "Bookmark",
                         color = if (isBookmarked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }

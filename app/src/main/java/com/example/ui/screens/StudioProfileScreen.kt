@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Edit
@@ -97,6 +98,7 @@ fun StudioProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val profile by viewModel.userProfile.collectAsStateWithLifecycle()
+    val projectsState by viewModel.projectsState.collectAsStateWithLifecycle()
     val myProjectsState by viewModel.myProjectsState.collectAsStateWithLifecycle()
     val bookmarksState by viewModel.bookmarksState.collectAsStateWithLifecycle()
     val followingState by viewModel.followingState.collectAsStateWithLifecycle()
@@ -109,6 +111,11 @@ fun StudioProfileScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
     var showEditDialog by remember { mutableStateOf(false) }
 
+    val publicProjectsById = remember(projectsState) {
+        (projectsState as? UiState.Success<List<CraftProject>>)?.data
+            ?.associateBy { it.id }
+            .orEmpty()
+    }
     val myProjects = (myProjectsState as? UiState.Success<List<CraftProject>>)?.data.orEmpty()
     val myProjectsCount = myProjects.size
     val totalLikesReceived = remember(myProjects) {
@@ -204,7 +211,7 @@ fun StudioProfileScreen(
                     Tab(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
-                        text = { Text("Saved ($bookmarksCount)") },
+                        text = { Text("Saved Projects ($bookmarksCount)") },
                         modifier = Modifier.testTag("tab_saved_tutorials")
                     )
                 }
@@ -277,16 +284,43 @@ fun StudioProfileScreen(
                         if (state.data.isEmpty()) {
                             item(key = "bm_empty") {
                                 EmptyAtelierCard(
-                                    title = "Nothing saved yet",
-                                    subtitle = "Tap Save on any project in the feed to keep it handy here."
+                                    title = "No saved projects yet",
+                                    subtitle = "Tap the Bookmark icon on any project or DIY guide in the feed to save it here for quick access."
                                 )
                             }
                         } else {
                             items(state.data, key = { it.projectId }) { bookmark ->
-                                BookmarkRowCard(
-                                    bookmark = bookmark,
-                                    onClick = { onOpenProject(bookmark.projectId) }
-                                )
+                                val liveProject = publicProjectsById[bookmark.projectId]
+                                if (liveProject != null) {
+                                    val isLiked by viewModel.observeIsProjectLiked(liveProject.id)
+                                        .collectAsStateWithLifecycle(initialValue = false)
+                                    ProjectFeedCard(
+                                        project = liveProject,
+                                        currentUserId = viewModel.currentUserId,
+                                        isLiked = isLiked,
+                                        isBookmarked = true,
+                                        onOpenDetail = { onOpenProject(liveProject.id) },
+                                        onToggleLike = { viewModel.toggleLike(liveProject, isLiked) },
+                                        onToggleBookmark = { viewModel.toggleBookmark(liveProject, true) }
+                                    )
+                                } else {
+                                    BookmarkRowCard(
+                                        bookmark = bookmark,
+                                        onClick = { onOpenProject(bookmark.projectId) },
+                                        onRemoveBookmark = {
+                                            viewModel.toggleBookmark(
+                                                CraftProject(
+                                                    id = bookmark.projectId,
+                                                    title = bookmark.projectTitle,
+                                                    category = bookmark.projectCategory,
+                                                    authorName = bookmark.authorName,
+                                                    coverPreset = bookmark.coverPreset
+                                                ),
+                                                currentlyBookmarked = true
+                                            )
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -669,29 +703,31 @@ private fun PersonalBrandingCard(
 @Composable
 private fun BookmarkRowCard(
     bookmark: ProjectBookmark,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRemoveBookmark: () -> Unit
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .testTag("saved_project_card_${bookmark.projectId}"),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
-            modifier = Modifier.padding(14.dp),
+            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
                 shape = MaterialTheme.shapes.small,
                 color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.size(42.dp)
+                modifier = Modifier.size(44.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Outlined.Bookmark,
+                        imageVector = Icons.Filled.Bookmark,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSecondaryContainer
                     )
@@ -699,11 +735,30 @@ private fun BookmarkRowCard(
             }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(bookmark.projectTitle, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "by ${bookmark.authorName}",
+                    text = bookmark.projectTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${ImageAndFormatUtils.formatMakerUsername(bookmark.authorName)} · ${bookmark.authorName}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(
+                onClick = onRemoveBookmark,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("remove_saved_project_${bookmark.projectId}")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Bookmark,
+                    contentDescription = "Remove from Saved Projects",
+                    tint = MaterialTheme.colorScheme.secondary
                 )
             }
         }

@@ -1,17 +1,23 @@
 package com.example.data
 
 import android.content.Context
+import android.net.Uri
+import android.util.Log
 import com.example.R
 import com.example.model.Conversation
 import com.example.model.CraftProject
 import com.example.model.DirectMessage
+import com.example.model.HobbyCategory
 import com.example.model.MakerEvent
 import com.example.model.MakerPublicProfile
 import com.example.model.ProjectBookmark
 import com.example.model.ProjectComment
+import com.example.model.ProjectProgressUpdate
+import com.example.model.ProjectSearchFilter
 import com.example.model.TutorialStep
 import com.example.model.UserFollowing
 import com.example.model.UserProfile
+import com.example.util.ImageAndFormatUtils
 import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.auth
@@ -19,22 +25,39 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageException
+import com.google.firebase.storage.StorageMetadata
+import com.google.firebase.storage.storage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
+import java.util.UUID
 
-class CraftRepository(private val db: FirebaseFirestore) {
+data class StorageUploadOutcome(
+    val imageUrlOrData: String,
+    val usedCloudStorage: Boolean,
+    val notice: String? = null
+)
+
+class CraftRepository(
+    private val db: FirebaseFirestore,
+    private val storage: FirebaseStorage = Firebase.storage
+) {
 
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        ),
+        Firebase.storage
     )
 
     private val auth = Firebase.auth
@@ -505,6 +528,234 @@ class CraftRepository(private val db: FirebaseFirestore) {
         )
     }
 
+    fun observeFilteredPublicProjects(
+        filter: ProjectSearchFilter,
+        rawQuery: String
+    ): Flow<List<CraftProject>> {
+        val trimmed = rawQuery.trim()
+        if (trimmed.isEmpty()) return observePublicProjects()
+
+        return flow {
+            val uid = requireUserId()
+            val path = "projects"
+            val baseQuery = db.collection(path).whereEqualTo("visibility", "public")
+
+            val normalizedQuery = trimmed.trimStart('#', '@').lowercase()
+            val tokens = normalizedQuery
+                .split(Regex("\\s+"))
+                .map { it.trim().trimStart('#', '@') }
+                .filter { it.isNotEmpty() }
+            if (tokens.isEmpty()) {
+                emitAll(observePublicProjects())
+                return@flow
+            }
+
+            val primaryToken = tokens.firstOrNull { it.length >= 2 } ?: tokens.first()
+            val titleCasedQuery = trimmed.split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .joinToString(" ") { word ->
+                    word.lowercase().replaceFirstChar { ch -> ch.uppercase() }
+                }
+            val exactCategoryLabel = HobbyCategory.creatableCategories
+                .firstOrNull { it.label.equals(normalizedQuery, ignoreCase = true) }
+                ?.label
+
+            val queryStreams = mutableListOf<Flow<List<CraftProject>>>()
+            when (filter) {
+                ProjectSearchFilter.CATEGORY -> {
+                    val categoryTarget = exactCategoryLabel ?: titleCasedQuery.ifBlank { trimmed }
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereEqualTo("category", categoryTarget),
+                        path = path,
+                        uid = uid
+                    )
+                    if (!trimmed.equals(categoryTarget, ignoreCase = false)) {
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereEqualTo("category", trimmed),
+                            path = path,
+                            uid = uid
+                        )
+                    }
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereArrayContains("searchTokens", primaryToken),
+                        path = path,
+                        uid = uid
+                    )
+                }
+
+                ProjectSearchFilter.MATERIAL -> {
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereArrayContains("materials", trimmed),
+                        path = path,
+                        uid = uid
+                    )
+                    if (titleCasedQuery.isNotBlank() && titleCasedQuery != trimmed) {
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereArrayContains("materials", titleCasedQuery),
+                            path = path,
+                            uid = uid
+                        )
+                    }
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereArrayContains("searchTokens", primaryToken),
+                        path = path,
+                        uid = uid
+                    )
+                }
+
+                ProjectSearchFilter.CREATOR -> {
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereEqualTo("authorName", trimmed),
+                        path = path,
+                        uid = uid
+                    )
+                    if (titleCasedQuery.isNotBlank() && titleCasedQuery != trimmed) {
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereEqualTo("authorName", titleCasedQuery),
+                            path = path,
+                            uid = uid
+                        )
+                    }
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereArrayContains("searchTokens", primaryToken),
+                        path = path,
+                        uid = uid
+                    )
+                }
+
+                ProjectSearchFilter.ALL -> {
+                    queryStreams += observeProjectQueryWithFallback(
+                        query = baseQuery.whereArrayContains("searchTokens", primaryToken),
+                        path = path,
+                        uid = uid
+                    )
+                    if (exactCategoryLabel != null) {
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereEqualTo("category", exactCategoryLabel),
+                            path = path,
+                            uid = uid
+                        )
+                    } else if (titleCasedQuery.isNotBlank()) {
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereEqualTo("authorName", trimmed),
+                            path = path,
+                            uid = uid
+                        )
+                        queryStreams += observeProjectQueryWithFallback(
+                            query = baseQuery.whereArrayContains("materials", titleCasedQuery),
+                            path = path,
+                            uid = uid
+                        )
+                    }
+                }
+            }
+
+            emitAll(
+                combine(queryStreams) { resultsPerQuery ->
+                    resultsPerQuery
+                        .asSequence()
+                        .flatMap { it.asSequence() }
+                        .distinctBy { it.id }
+                        .filter { project -> matchesSearchFilter(project, filter, tokens) }
+                        .sortedByDescending { it.createdAt ?: Timestamp(0, 0) }
+                        .toList()
+                }
+            )
+        }
+    }
+
+    private fun observeProjectQueryWithFallback(
+        query: Query,
+        path: String,
+        uid: String
+    ): Flow<List<CraftProject>> =
+        query.snapshots()
+            .map { snapshot ->
+                snapshot.toObjects(CraftProject::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError?.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION) {
+                    Log.w("CraftRepository", "Composite index unavailable for search query; falling back to public visibility query", firestoreError)
+                    emitAll(
+                        db.collection(path)
+                            .whereEqualTo("visibility", "public")
+                            .snapshots()
+                            .map { fallbackSnap ->
+                                fallbackSnap.toObjects(CraftProject::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                            }
+                    )
+                } else {
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+            }
+
+    private fun matchesSearchFilter(
+        project: CraftProject,
+        filter: ProjectSearchFilter,
+        tokens: List<String>
+    ): Boolean {
+        val categoryLower = project.category.lowercase()
+        val authorLower = project.authorName.lowercase()
+        val handleLower = ImageAndFormatUtils.formatMakerUsername(project.authorName)
+            .removePrefix("@")
+            .lowercase()
+        val materialsLower = project.materials.map { it.trim().lowercase() }
+
+        return when (filter) {
+            ProjectSearchFilter.CATEGORY -> tokens.all { token -> categoryLower.contains(token) }
+            ProjectSearchFilter.MATERIAL -> tokens.all { token ->
+                materialsLower.any { material -> material.contains(token) }
+            }
+            ProjectSearchFilter.CREATOR -> tokens.all { token ->
+                authorLower.contains(token) || handleLower.contains(token)
+            }
+            ProjectSearchFilter.ALL -> {
+                val titleLower = project.title.lowercase()
+                val tagsAndTokensLower = (project.tags + project.searchTokens)
+                    .map { it.trim().trimStart('#').lowercase() }
+                tokens.all { token ->
+                    categoryLower.contains(token) ||
+                        authorLower.contains(token) ||
+                        handleLower.contains(token) ||
+                        materialsLower.any { it.contains(token) } ||
+                        titleLower.contains(token) ||
+                        tagsAndTokensLower.any { it.contains(token) }
+                }
+            }
+        }
+    }
+
+    private fun buildProjectSearchTokens(
+        title: String,
+        category: String,
+        authorName: String,
+        materials: List<String>
+    ): List<String> {
+        val tokenSet = linkedSetOf<String>()
+        fun addTextTokens(raw: String) {
+            val clean = raw.trim().lowercase()
+            if (clean.isEmpty()) return
+            if (clean.length >= 2) {
+                tokenSet.add(clean)
+            }
+            clean.split(Regex("[^a-z0-9]+"))
+                .filter { it.length >= 2 }
+                .forEach { tokenSet.add(it) }
+        }
+
+        addTextTokens(category)
+        addTextTokens(authorName)
+        val handle = ImageAndFormatUtils.formatMakerUsername(authorName).removePrefix("@").lowercase()
+        if (handle.length >= 2) tokenSet.add(handle)
+        materials.forEach { addTextTokens(it) }
+        addTextTokens(title)
+        return tokenSet.take(60)
+    }
+
     suspend fun fetchLatestPublicProjects(): Result<List<CraftProject>> {
         val path = "projects"
         return try {
@@ -575,6 +826,92 @@ class CraftRepository(private val db: FirebaseFirestore) {
         )
     }
 
+    // --- FIREBASE STORAGE IMAGE UPLOADS ---
+
+    suspend fun uploadProjectCoverImage(
+        context: Context,
+        imageUri: Uri
+    ): Result<StorageUploadOutcome> {
+        val uid = requireUserId()
+        val path = "project_covers/$uid/${UUID.randomUUID()}.jpg"
+        return uploadImageToStorage(context, imageUri, path)
+    }
+
+    suspend fun uploadProjectUpdateImage(
+        context: Context,
+        projectId: String,
+        imageUri: Uri
+    ): Result<StorageUploadOutcome> {
+        val uid = requireUserId()
+        require(projectId.isNotBlank()) { "Project ID is required." }
+        val path = "project_updates/$uid/$projectId/${UUID.randomUUID()}.jpg"
+        return uploadImageToStorage(context, imageUri, path)
+    }
+
+    private suspend fun uploadImageToStorage(
+        context: Context,
+        imageUri: Uri,
+        storagePath: String
+    ): Result<StorageUploadOutcome> {
+        return try {
+            requireUserId()
+            val jpegBytes = ImageAndFormatUtils.encodeUriToStorageJpegBytes(context, imageUri)
+                ?: return Result.failure(IllegalArgumentException("Could not process selected photo. Try another image."))
+
+            val ref = storage.reference.child(storagePath)
+            val metadata = StorageMetadata.Builder()
+                .setContentType("image/jpeg")
+                .build()
+            ref.putBytes(jpegBytes, metadata).await()
+            val downloadUrl = ref.downloadUrl.await().toString()
+            Result.success(
+                StorageUploadOutcome(
+                    imageUrlOrData = downloadUrl,
+                    usedCloudStorage = true
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val storageErr = e as? StorageException
+            val isUnprovisionedOrBlocked = storageErr != null && (
+                storageErr.errorCode == StorageException.ERROR_BUCKET_NOT_FOUND ||
+                    storageErr.errorCode == StorageException.ERROR_PROJECT_NOT_FOUND ||
+                    storageErr.errorCode == StorageException.ERROR_NOT_AUTHORIZED ||
+                    storageErr.httpResultCode == 404 ||
+                    storageErr.httpResultCode == 403
+                )
+            Log.w("CraftStorage", "Firebase Storage upload failed at $storagePath", e)
+            if (isUnprovisionedOrBlocked) {
+                val compact = ImageAndFormatUtils.encodeUriToCompactBase64(context, imageUri)
+                if (compact != null) {
+                    return Result.success(
+                        StorageUploadOutcome(
+                            imageUrlOrData = compact,
+                            usedCloudStorage = false,
+                            notice = "Enable Firebase Storage in Firebase Console for full-resolution cloud photos. Saved compact preview instead."
+                        )
+                    )
+                }
+            }
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun deleteStorageImageBestEffort(imageUrlOrData: String?) {
+        val url = imageUrlOrData?.trim().orEmpty()
+        if (!url.startsWith("https://firebasestorage.googleapis.com", ignoreCase = true) &&
+            !url.startsWith("gs://", ignoreCase = true)
+        ) {
+            return
+        }
+        runCatching {
+            storage.getReferenceFromUrl(url).delete().await()
+        }.onFailure { err ->
+            Log.w("CraftStorage", "Best-effort image cleanup skipped for $url", err)
+        }
+    }
+
     suspend fun createProject(
         authorProfile: UserProfile?,
         title: String,
@@ -606,6 +943,15 @@ class CraftRepository(private val db: FirebaseFirestore) {
                 ?: "Maker").take(60)
             val authorPhoto = (authorProfile?.photoUrl ?: user?.photoUrl?.toString()).orEmpty().take(500)
 
+            val cleanCategory = category.trim().ifBlank { "Project" }.take(40)
+            val cleanMaterials = materials.map { it.trim() }.filter { it.isNotBlank() }.take(20)
+            val searchTokens = buildProjectSearchTokens(
+                title = cleanTitle,
+                category = cleanCategory,
+                authorName = authorName,
+                materials = cleanMaterials
+            )
+
             val payload = mapOf(
                 "authorId" to uid,
                 "authorName" to authorName,
@@ -613,11 +959,12 @@ class CraftRepository(private val db: FirebaseFirestore) {
                 "authorXHandle" to "",
                 "title" to cleanTitle,
                 "summary" to cleanSummary,
-                "category" to category.take(40),
+                "category" to cleanCategory,
                 "postType" to postType,
                 "difficulty" to difficulty,
                 "estimatedTime" to estimatedTime.trim().take(40),
-                "materials" to materials.map { it.trim() }.filter { it.isNotBlank() }.take(20),
+                "materials" to cleanMaterials,
+                "searchTokens" to searchTokens,
                 "steps" to steps.take(15).mapIndexed { index, step ->
                     step.copy(stepNumber = (index + 1).toLong()).toMap()
                 },
@@ -642,12 +989,90 @@ class CraftRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun updateProject(
+        projectId: String,
+        authorProfile: UserProfile? = null,
+        title: String,
+        summary: String,
+        category: String,
+        postType: String,
+        difficulty: String,
+        estimatedTime: String,
+        materials: List<String>,
+        steps: List<TutorialStep>,
+        coverPreset: String,
+        coverImageData: String?,
+        previousCoverImageData: String?
+    ): Result<Unit> {
+        val path = "projects/$projectId"
+        return try {
+            requireUserId()
+            require(projectId.isNotBlank())
+            val cleanTitle = title.trim()
+            val cleanSummary = summary.trim()
+            require(cleanTitle.length in 3..100) { "Title must be 3 to 100 characters." }
+            require(cleanSummary.length in 5..1500) { "Description must be 5 to 1500 characters." }
+            val cleanCover = coverImageData?.takeIf { it.isNotBlank() }
+            require(cleanCover == null || cleanCover.length <= 160_000) { "Cover image is too large." }
+
+            val cleanCategory = category.trim().ifBlank { "Project" }.take(40)
+            val cleanMaterials = materials.map { it.trim() }.filter { it.isNotBlank() }.take(20)
+            val user = auth.currentUser
+            val authorName = (authorProfile?.displayName?.takeIf { it.isNotBlank() }
+                ?: user?.displayName?.takeIf { it.isNotBlank() }
+                ?: "Maker").take(60)
+            val searchTokens = buildProjectSearchTokens(
+                title = cleanTitle,
+                category = cleanCategory,
+                authorName = authorName,
+                materials = cleanMaterials
+            )
+
+            val updates = mutableMapOf<String, Any>(
+                "title" to cleanTitle,
+                "summary" to cleanSummary,
+                "category" to cleanCategory,
+                "postType" to postType,
+                "difficulty" to difficulty,
+                "estimatedTime" to estimatedTime.trim().take(40),
+                "materials" to cleanMaterials,
+                "searchTokens" to searchTokens,
+                "steps" to steps.take(15).mapIndexed { index, step ->
+                    step.copy(stepNumber = (index + 1).toLong()).toMap()
+                },
+                "coverPreset" to coverPreset,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (cleanCover != null) {
+                updates["coverImageData"] = cleanCover
+            } else if (!previousCoverImageData.isNullOrBlank()) {
+                updates["coverImageData"] = FieldValue.delete()
+            }
+
+            db.collection("projects").document(projectId).update(updates).await()
+            if (!previousCoverImageData.isNullOrBlank() && previousCoverImageData != cleanCover) {
+                deleteStorageImageBestEffort(previousCoverImageData)
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun deleteProject(projectId: String): Result<Unit> {
         val path = "projects/$projectId"
         return try {
             requireUserId()
             require(projectId.isNotBlank())
+            val existingCover = runCatching {
+                db.collection("projects").document(projectId).get().await()
+                    .getString("coverImageData")
+            }.getOrNull()
             db.collection("projects").document(projectId).delete().await()
+            deleteStorageImageBestEffort(existingCover)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -890,6 +1315,113 @@ class CraftRepository(private val db: FirebaseFirestore) {
                 )
             )
             batch.commit().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    // --- PROJECT CHRONOLOGICAL PROGRESS UPDATES ---
+
+    fun observeProjectUpdates(
+        projectId: String,
+        isOwner: Boolean
+    ): Flow<List<ProjectProgressUpdate>> = flow {
+        val uid = requireUserId()
+        require(projectId.isNotBlank())
+        val path = "projects/$projectId/updates"
+        val query = if (isOwner) {
+            db.collection("projects").document(projectId).collection("updates")
+                .whereEqualTo("projectAuthorId", uid)
+        } else {
+            db.collection("projects").document(projectId).collection("updates")
+                .whereEqualTo("projectVisibility", "public")
+        }
+        emitAll(
+            query.snapshots()
+                .map { snapshot ->
+                    snapshot.toObjects(ProjectProgressUpdate::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                        .sortedBy { it.createdAt ?: Timestamp.now() }
+                }
+                .catch { error ->
+                    logStreamError(error, OperationType.LIST, path, uid)
+                    throw error
+                }
+        )
+    }
+
+    suspend fun addProjectUpdate(
+        project: CraftProject,
+        authorProfile: UserProfile?,
+        statusLabel: String,
+        message: String,
+        photoData: String?
+    ): Result<Unit> {
+        val path = "projects/${project.id}/updates"
+        return try {
+            val uid = requireUserId()
+            require(project.id.isNotBlank())
+            require(project.authorId == uid) { "Only the project maker can post progress updates." }
+            val cleanStatus = statusLabel.trim().ifBlank { "In Progress" }.take(30)
+            val cleanMessage = message.trim()
+            require(cleanMessage.length in 1..600) { "Update message must be 1 to 600 characters." }
+            val cleanPhoto = photoData?.takeIf { it.isNotBlank() }
+            require(cleanPhoto == null || cleanPhoto.length <= 160_000) { "Progress photo is too large." }
+
+            val user = auth.currentUser
+            val authorName = (authorProfile?.displayName?.takeIf { it.isNotBlank() }
+                ?: user?.displayName?.takeIf { it.isNotBlank() }
+                ?: "Maker").take(60)
+            val authorPhoto = (authorProfile?.photoUrl ?: user?.photoUrl?.toString()).orEmpty().take(500)
+
+            val payload = mapOf(
+                "projectId" to project.id,
+                "projectVisibility" to project.visibility,
+                "projectAuthorId" to project.authorId,
+                "authorId" to uid,
+                "authorName" to authorName,
+                "authorPhotoUrl" to authorPhoto,
+                "statusLabel" to cleanStatus,
+                "message" to cleanMessage,
+                "photoData" to cleanPhoto,
+                "createdAt" to FieldValue.serverTimestamp()
+            ).filterValues { it != null }
+
+            db.collection("projects").document(project.id)
+                .collection("updates")
+                .document()
+                .set(payload)
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteProjectUpdate(
+        projectId: String,
+        updateId: String
+    ): Result<Unit> {
+        val path = "projects/$projectId/updates/$updateId"
+        return try {
+            requireUserId()
+            require(projectId.isNotBlank() && updateId.isNotBlank())
+            val existingPhoto = runCatching {
+                db.collection("projects").document(projectId)
+                    .collection("updates").document(updateId)
+                    .get().await().getString("photoData")
+            }.getOrNull()
+            db.collection("projects").document(projectId)
+                .collection("updates").document(updateId)
+                .delete()
+                .await()
+            deleteStorageImageBestEffort(existingPhoto)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e

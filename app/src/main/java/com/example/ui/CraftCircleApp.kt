@@ -115,10 +115,15 @@ object CraftRoutes {
     const val EVENTS = "events"
     const val STUDIO = "studio"
     const val CREATE_PROJECT = "create_project"
+    const val EDIT_PROJECT = "edit_project/{projectId}"
     const val PROJECT_DETAIL = "project_detail/{projectId}"
     const val CHAT_THREAD = "chat_thread/{conversationId}"
     const val MAKER_PROFILE = "maker_profile/{makerId}"
 
+    private val SAFE_ID_REGEX = Regex("^[a-zA-Z0-9_\\-]{1,128}$")
+
+    fun isValidId(id: String?): Boolean = !id.isNullOrBlank() && SAFE_ID_REGEX.matches(id)
+    fun editProject(projectId: String) = "edit_project/$projectId"
     fun projectDetail(projectId: String) = "project_detail/$projectId"
     fun chatThread(conversationId: String) = "chat_thread/$conversationId"
     fun makerProfile(makerId: String) = "maker_profile/$makerId"
@@ -233,7 +238,9 @@ private fun AuthenticatedCraftApp(
     LaunchedEffect(pendingProjectId) {
         val targetId = pendingProjectId
         if (!targetId.isNullOrBlank()) {
-            navController.navigate(CraftRoutes.projectDetail(targetId))
+            if (CraftRoutes.isValidId(targetId)) {
+                navController.navigate(CraftRoutes.projectDetail(targetId))
+            }
             onConsumePendingProject()
         }
     }
@@ -494,6 +501,20 @@ private fun AuthenticatedCraftApp(
                             )
                         }
                         composable(
+                            route = CraftRoutes.EDIT_PROJECT,
+                            arguments = listOf(navArgument("projectId") { type = NavType.StringType })
+                        ) { entry ->
+                            val projectId = entry.arguments?.getString("projectId").orEmpty()
+                            CreateProjectScreen(
+                                viewModel = viewModel,
+                                editingProjectId = projectId,
+                                onNavigateBack = { navController.popBackStack() },
+                                onProjectCreated = { _ ->
+                                    navController.popBackStack()
+                                }
+                            )
+                        }
+                        composable(
                             route = CraftRoutes.PROJECT_DETAIL,
                             arguments = listOf(navArgument("projectId") { type = NavType.StringType })
                         ) { entry ->
@@ -517,6 +538,9 @@ private fun AuthenticatedCraftApp(
                                     } else {
                                         navController.navigate(CraftRoutes.makerProfile(authorId))
                                     }
+                                },
+                                onEditProject = { id ->
+                                    navController.navigate(CraftRoutes.editProject(id))
                                 }
                             )
                         }

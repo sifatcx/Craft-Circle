@@ -32,6 +32,26 @@ service cloud.firestore {
       return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
     }
 
+    function isValidOptionalImageRef(data, key, maxLen) {
+      return !(key in data) || (
+        data[key] is string &&
+        data[key].size() <= maxLen &&
+        (
+          data[key].size() == 0 ||
+          data[key].matches('^https://.*') ||
+          data[key].matches('^data:image/(jpeg|jpg|png|webp);base64,.*')
+        )
+      );
+    }
+
+    function isValidOptionalStringList(data, key, maxSize) {
+      return !(key in data) || (
+        data[key] is list &&
+        data[key].size() <= maxSize &&
+        (data[key].size() == 0 || data[key][0] is string)
+      );
+    }
+
     // --- VALIDATION HELPERS ---
     function isValidUserProfile(data) {
       return data.userId is string && isValidId(data.userId) &&
@@ -69,10 +89,11 @@ service cloud.firestore {
              data.estimatedTime is string && data.estimatedTime.size() <= 40 &&
              data.materials is list && data.materials.size() <= 20 &&
              (data.materials.size() == 0 || data.materials[0] is string) &&
+             isValidOptionalStringList(data, 'searchTokens', 60) &&
              data.steps is list && data.steps.size() <= 15 &&
              (data.steps.size() == 0 || data.steps[0] is map) &&
              data.coverPreset in ['woodcraft', 'makertech', 'ceramics', 'studio', 'none'] &&
-             isValidOptionalString(data, 'coverImageData', 160000) &&
+             isValidOptionalImageRef(data, 'coverImageData', 160000) &&
              isValidOptionalString(data, 'xPostUrl', 300) &&
              isValidOptionalString(data, 'lastCommentId', 128) &&
              isValidOptionalString(data, 'lastDeletedCommentId', 128) &&
@@ -98,6 +119,19 @@ service cloud.firestore {
              data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
              data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500 &&
              data.text is string && data.text.size() >= 1 && data.text.size() <= 500 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidProjectUpdate(data, projectId) {
+      return data.projectId == projectId &&
+             data.projectVisibility in ['public', 'private'] &&
+             data.projectAuthorId is string && isValidId(data.projectAuthorId) &&
+             data.authorId is string && isValidId(data.authorId) &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.authorPhotoUrl is string && data.authorPhotoUrl.size() <= 500 &&
+             data.statusLabel is string && data.statusLabel.size() >= 1 && data.statusLabel.size() <= 30 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 600 &&
+             isValidOptionalImageRef(data, 'photoData', 160000) &&
              isValidTimestamp(data.createdAt);
     }
 
@@ -403,7 +437,7 @@ service cloud.firestore {
                        incoming().keys().hasOnly([
                          'authorId', 'authorName', 'authorPhotoUrl', 'authorXHandle',
                          'title', 'summary', 'category', 'postType', 'difficulty',
-                         'estimatedTime', 'materials', 'steps', 'coverPreset',
+                         'estimatedTime', 'materials', 'searchTokens', 'steps', 'coverPreset',
                          'coverImageData', 'xPostUrl', 'lastCommentId',
                          'visibility', 'status', 'likes', 'likesCount', 'commentsCount',
                          'createdAt', 'updatedAt'
@@ -421,7 +455,7 @@ service cloud.firestore {
           incoming().commentsCount == existing().commentsCount &&
           incoming().diff(existing()).affectedKeys().hasOnly([
             'title', 'summary', 'category', 'postType', 'difficulty',
-            'estimatedTime', 'materials', 'steps', 'coverPreset',
+            'estimatedTime', 'materials', 'searchTokens', 'steps', 'coverPreset',
             'coverImageData', 'xPostUrl', 'visibility', 'status', 'updatedAt'
           ])
         ) ||
@@ -532,6 +566,41 @@ service cloud.firestore {
                          getAfter(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount ==
                            get(/databases/$(database)/documents/projects/$(projectId)).data.commentsCount - 1 &&
                          getAfter(/databases/$(database)/documents/projects/$(projectId)).data.lastDeletedCommentId == commentId;
+      }
+
+      // Chronological maker progress updates subcollection
+      match /updates/{updateId} {
+        allow get: if isSignedIn() && isValidId(projectId) && isValidId(updateId) &&
+                      (existing().projectVisibility == 'public' || existing().projectAuthorId == request.auth.uid || existing().authorId == request.auth.uid);
+        allow list: if isSignedIn() &&
+                       (existing().projectVisibility == 'public' || existing().projectAuthorId == request.auth.uid || existing().authorId == request.auth.uid);
+
+        allow create: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(updateId) &&
+                         incoming().authorId == request.auth.uid &&
+                         incoming().keys().hasAll([
+                           'projectId', 'projectVisibility', 'projectAuthorId',
+                           'authorId', 'authorName', 'authorPhotoUrl',
+                           'statusLabel', 'message', 'createdAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'projectId', 'projectVisibility', 'projectAuthorId',
+                           'authorId', 'authorName', 'authorPhotoUrl',
+                           'statusLabel', 'message', 'photoData', 'createdAt'
+                         ]) &&
+                         isValidProjectUpdate(incoming(), projectId) &&
+                         exists(/databases/$(database)/documents/projects/$(projectId)) &&
+                         get(/databases/$(database)/documents/projects/$(projectId)).data.visibility == incoming().projectVisibility &&
+                         get(/databases/$(database)/documents/projects/$(projectId)).data.authorId == incoming().projectAuthorId &&
+                         get(/databases/$(database)/documents/projects/$(projectId)).data.authorId == request.auth.uid;
+
+        allow update: if false;
+
+        allow delete: if isSignedIn() &&
+                         isValidId(projectId) &&
+                         isValidId(updateId) &&
+                         existing().authorId == request.auth.uid;
       }
     }
 

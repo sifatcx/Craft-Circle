@@ -1,5 +1,7 @@
 package com.example.viewmodel
 
+import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,6 +17,8 @@ import com.example.model.MakerPublicProfile
 import com.example.model.ProjectActivityAlert
 import com.example.model.ProjectBookmark
 import com.example.model.ProjectComment
+import com.example.model.ProjectProgressUpdate
+import com.example.model.ProjectSearchFilter
 import com.example.model.TutorialStep
 import com.example.model.UiState
 import com.example.model.UserFollowing
@@ -22,6 +26,7 @@ import com.example.model.UserProfile
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -32,6 +37,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -50,6 +58,9 @@ class CraftViewModel(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _selectedSearchFilter = MutableStateFlow(ProjectSearchFilter.ALL)
+    val selectedSearchFilter: StateFlow<ProjectSearchFilter> = _selectedSearchFilter.asStateFlow()
 
     private val _selectedFeedTab = MutableStateFlow(FeedTab.FOR_YOU)
     val selectedFeedTab: StateFlow<FeedTab> = _selectedFeedTab.asStateFlow()
@@ -73,6 +84,22 @@ class CraftViewModel(
     val projectsState: StateFlow<UiState<List<CraftProject>>> = _feedRefreshTrigger
         .flatMapLatest {
             repository.observePublicProjects()
+                .toUiStateFlow("Failed to load creative projects")
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+    val feedProjectsState: StateFlow<UiState<List<CraftProject>>> = combine(
+        _feedRefreshTrigger,
+        _searchQuery.debounce(250L).distinctUntilChanged(),
+        _selectedSearchFilter
+    ) { _, query, filter -> filter to query }
+        .flatMapLatest { (filter, query) ->
+            repository.observeFilteredPublicProjects(filter, query)
                 .toUiStateFlow("Failed to load creative projects")
         }
         .stateIn(
@@ -264,12 +291,16 @@ class CraftViewModel(
         _searchQuery.value = query
     }
 
+    fun selectSearchFilter(filter: ProjectSearchFilter) {
+        _selectedSearchFilter.value = filter
+    }
+
     fun refreshFeed() {
         if (_isRefreshing.value) return
         _isRefreshing.value = true
         viewModelScope.launch {
             try {
-                if (projectsState.value is UiState.Error) {
+                if (projectsState.value is UiState.Error || feedProjectsState.value is UiState.Error) {
                     _feedRefreshTrigger.value += 1
                 }
                 repository.fetchLatestPublicProjects().onFailure { err ->
@@ -290,6 +321,9 @@ class CraftViewModel(
 
     fun observeProjectComments(projectId: String): Flow<UiState<List<ProjectComment>>> =
         repository.observeProjectComments(projectId).toUiStateFlow("Failed to load comments")
+
+    fun observeProjectUpdates(projectId: String, isOwner: Boolean): Flow<UiState<List<ProjectProgressUpdate>>> =
+        repository.observeProjectUpdates(projectId, isOwner).toUiStateFlow("Failed to load project updates")
 
     fun observeIsProjectLiked(projectId: String): Flow<Boolean> =
         repository.observeIsProjectLiked(projectId, currentUserId)
@@ -384,6 +418,7 @@ class CraftViewModel(
     }
 
     fun createProject(
+        context: Context,
         title: String,
         summary: String,
         category: String,
@@ -393,10 +428,27 @@ class CraftViewModel(
         materials: List<String>,
         steps: List<TutorialStep>,
         coverPreset: String,
-        coverImageData: String?,
+        selectedImageUri: Uri?,
+        coverImageData: String? = null,
         onComplete: (Boolean, String?, String?) -> Unit
     ) {
         viewModelScope.launch {
+            var resolvedImage = coverImageData
+            var storageNotice: String? = null
+            if (selectedImageUri != null) {
+                val uploadResult = repository.uploadProjectCoverImage(context, selectedImageUri)
+                if (uploadResult.isFailure) {
+                    val message = uploadResult.exceptionOrNull()?.localizedMessage
+                        ?: "Could not upload project image to Firebase Storage."
+                    _statusBanner.value = message
+                    onComplete(false, null, message)
+                    return@launch
+                }
+                val outcome = uploadResult.getOrThrow()
+                resolvedImage = outcome.imageUrlOrData
+                storageNotice = outcome.notice
+            }
+
             val result = repository.createProject(
                 authorProfile = userProfile.value,
                 title = title,
@@ -408,17 +460,80 @@ class CraftViewModel(
                 materials = materials,
                 steps = steps,
                 coverPreset = coverPreset,
-                coverImageData = coverImageData
+                coverImageData = resolvedImage
             )
             result.fold(
                 onSuccess = { newId ->
-                    _statusBanner.value = "Project uploaded to CraftCircle!"
+                    _statusBanner.value = storageNotice ?: "Project uploaded to CraftCircle!"
                     onComplete(true, newId, null)
                 },
                 onFailure = { err ->
                     val message = err.message ?: "Could not upload project."
                     _statusBanner.value = message
                     onComplete(false, null, message)
+                }
+            )
+        }
+    }
+
+    fun updateProject(
+        context: Context,
+        projectId: String,
+        title: String,
+        summary: String,
+        category: String,
+        postType: String,
+        difficulty: String,
+        estimatedTime: String,
+        materials: List<String>,
+        steps: List<TutorialStep>,
+        coverPreset: String,
+        selectedImageUri: Uri?,
+        coverImageData: String?,
+        previousCoverImageData: String?,
+        onComplete: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            var resolvedImage = coverImageData
+            var storageNotice: String? = null
+            if (selectedImageUri != null) {
+                val uploadResult = repository.uploadProjectCoverImage(context, selectedImageUri)
+                if (uploadResult.isFailure) {
+                    val message = uploadResult.exceptionOrNull()?.localizedMessage
+                        ?: "Could not upload project image to Firebase Storage."
+                    _statusBanner.value = message
+                    onComplete(false, message)
+                    return@launch
+                }
+                val outcome = uploadResult.getOrThrow()
+                resolvedImage = outcome.imageUrlOrData
+                storageNotice = outcome.notice
+            }
+
+            val result = repository.updateProject(
+                projectId = projectId,
+                authorProfile = userProfile.value,
+                title = title,
+                summary = summary,
+                category = category,
+                postType = postType,
+                difficulty = difficulty,
+                estimatedTime = estimatedTime,
+                materials = materials,
+                steps = steps,
+                coverPreset = coverPreset,
+                coverImageData = resolvedImage,
+                previousCoverImageData = previousCoverImageData
+            )
+            result.fold(
+                onSuccess = {
+                    _statusBanner.value = storageNotice ?: "Project updated!"
+                    onComplete(true, null)
+                },
+                onFailure = { err ->
+                    val message = err.message ?: "Could not update project."
+                    _statusBanner.value = message
+                    onComplete(false, message)
                 }
             )
         }
@@ -502,10 +617,72 @@ class CraftViewModel(
         viewModelScope.launch {
             repository.toggleBookmark(project, currentlyBookmarked).fold(
                 onSuccess = {
-                    _statusBanner.value = if (currentlyBookmarked) "Removed from Saved" else "Saved to your Studio!"
+                    _statusBanner.value = if (currentlyBookmarked) {
+                        "Removed from Saved Projects"
+                    } else {
+                        "Bookmarked to Saved Projects!"
+                    }
                 },
                 onFailure = { err ->
                     _statusBanner.value = err.message ?: "Could not update bookmark."
+                }
+            )
+        }
+    }
+
+    fun addProjectUpdate(
+        context: Context,
+        project: CraftProject,
+        statusLabel: String,
+        message: String,
+        selectedPhotoUri: Uri?,
+        onDone: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            var resolvedPhotoUrl: String? = null
+            var storageNotice: String? = null
+            if (selectedPhotoUri != null) {
+                val uploadResult = repository.uploadProjectUpdateImage(context, project.id, selectedPhotoUri)
+                if (uploadResult.isFailure) {
+                    val errMsg = uploadResult.exceptionOrNull()?.localizedMessage
+                        ?: "Could not upload progress photo to Firebase Storage."
+                    _statusBanner.value = errMsg
+                    onDone(false, errMsg)
+                    return@launch
+                }
+                val outcome = uploadResult.getOrThrow()
+                resolvedPhotoUrl = outcome.imageUrlOrData
+                storageNotice = outcome.notice
+            }
+
+            repository.addProjectUpdate(
+                project = project,
+                authorProfile = userProfile.value,
+                statusLabel = statusLabel,
+                message = message,
+                photoData = resolvedPhotoUrl
+            ).fold(
+                onSuccess = {
+                    _statusBanner.value = storageNotice ?: "Progress update posted!"
+                    onDone(true, null)
+                },
+                onFailure = { err ->
+                    val errMsg = err.message ?: "Could not post progress update."
+                    _statusBanner.value = errMsg
+                    onDone(false, errMsg)
+                }
+            )
+        }
+    }
+
+    fun deleteProjectUpdate(projectId: String, updateId: String) {
+        viewModelScope.launch {
+            repository.deleteProjectUpdate(projectId, updateId).fold(
+                onSuccess = {
+                    _statusBanner.value = "Progress update removed."
+                },
+                onFailure = { err ->
+                    _statusBanner.value = err.message ?: "Could not remove progress update."
                 }
             )
         }

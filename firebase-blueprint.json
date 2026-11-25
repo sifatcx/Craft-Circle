@@ -47,6 +47,7 @@
         "difficulty": { "type": "string", "enum": ["Beginner", "Intermediate", "Advanced"], "description": "Skill level" },
         "estimatedTime": { "type": "string", "description": "Estimated build duration" },
         "materials": { "type": "array", "description": "List of materials and tools (max 20)" },
+        "searchTokens": { "type": "array", "description": "Normalized lowercase tokens for Firestore category, material, and creator search (max 60)" },
         "steps": { "type": "array", "description": "Step-by-step DIY tutorial steps (max 15)" },
         "coverPreset": { "type": "string", "enum": ["woodcraft", "makertech", "ceramics", "studio", "none"], "description": "Preset artwork key" },
         "coverImageData": { "type": "string", "description": "Optional compressed JPEG base64 data URI" },
@@ -93,6 +94,28 @@
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
       },
       "required": ["projectId", "projectVisibility", "projectAuthorId", "authorId", "authorName", "authorPhotoUrl", "text", "createdAt"]
+    },
+    "ProjectProgressUpdate": {
+      "title": "ProjectProgressUpdate",
+      "description": "Chronological progress photo and status update posted by a project maker.",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "description": "Parent project ID" },
+        "projectVisibility": { "type": "string", "enum": ["public", "private"], "description": "Denormalized parent visibility" },
+        "projectAuthorId": { "type": "string", "description": "Denormalized parent author UID" },
+        "authorId": { "type": "string", "description": "Maker UID" },
+        "authorName": { "type": "string", "description": "Maker display name" },
+        "authorPhotoUrl": { "type": "string", "description": "Maker avatar URL" },
+        "statusLabel": { "type": "string", "description": "Build milestone or status label" },
+        "message": { "type": "string", "description": "Progress update note" },
+        "photoData": { "type": "string", "description": "Optional compressed JPEG base64 data URI" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "projectId", "projectVisibility", "projectAuthorId",
+        "authorId", "authorName", "authorPhotoUrl",
+        "statusLabel", "message", "createdAt"
+      ]
     },
     "ProjectBookmark": {
       "title": "ProjectBookmark",
@@ -241,6 +264,10 @@
     "/projects/{projectId}/comments/{commentId}": {
       "schema": { "$ref": "#/entities/ProjectComment" },
       "description": "Maker comments and tips on creative projects."
+    },
+    "/projects/{projectId}/updates/{updateId}": {
+      "schema": { "$ref": "#/entities/ProjectProgressUpdate" },
+      "description": "Chronological progress photos and status updates posted by the project maker."
     },
     "/conversations/{conversationId}": {
       "schema": { "$ref": "#/entities/Conversation" },

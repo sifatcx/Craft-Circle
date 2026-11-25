@@ -135,6 +135,7 @@ data class CraftProject(
     val estimatedTime: String = "",
     val materials: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
+    val searchTokens: List<String> = emptyList(),
     val steps: List<TutorialStep> = emptyList(),
     val coverPreset: String = CoverPreset.STUDIO.key,
     val coverImageData: String? = null,
@@ -166,6 +167,30 @@ data class ProjectComment(
     @ServerTimestamp val createdAt: Timestamp? = null
 )
 
+enum class ProjectUpdateStatus(val label: String) {
+    IN_PROGRESS("In Progress"),
+    MATERIALS("Materials Ready"),
+    PROTOTYPE("Prototype"),
+    FINISHING("Finishing"),
+    COMPLETED("Completed")
+}
+
+@Keep
+@IgnoreExtraProperties
+data class ProjectProgressUpdate(
+    @DocumentId val id: String = "",
+    val projectId: String = "",
+    val projectVisibility: String = "public",
+    val projectAuthorId: String = "",
+    val authorId: String = "",
+    val authorName: String = "",
+    val authorPhotoUrl: String = "",
+    val statusLabel: String = ProjectUpdateStatus.IN_PROGRESS.label,
+    val message: String = "",
+    val photoData: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null
+)
+
 @Keep
 @IgnoreExtraProperties
 data class ProjectBookmark(
@@ -182,6 +207,13 @@ data class ProjectBookmark(
 enum class FeedTab(val label: String) {
     FOR_YOU("For You"),
     FOLLOWING("Following")
+}
+
+enum class ProjectSearchFilter(val label: String) {
+    ALL("All"),
+    CATEGORY("Category"),
+    MATERIAL("Material"),
+    CREATOR("Creator")
 }
 
 @Keep
